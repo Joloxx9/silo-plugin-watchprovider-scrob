@@ -1,0 +1,69 @@
+{
+  "plugin_id": "silo.watchprovider.scrob",
+  "version": "0.1.0",
+  "checksum": "__CHECKSUM__",
+  "silo_api_version": "v1",
+  "supported_platforms": [
+    { "os": "darwin", "arch": "arm64" },
+    { "os": "linux", "arch": "amd64" },
+    { "os": "linux", "arch": "arm64" }
+  ],
+  "capabilities": [
+    {
+      "type": "watch_sync_provider.v1",
+      "id": "scrob",
+      "display_name": "Scrob",
+      "description": "Bidirectional watch history and movie and series ratings for a self-hosted Scrob instance.",
+      "config_schema": [
+        {
+          "key": "scrob_server",
+          "title": "Your Scrob server",
+          "description": "Connection details for the Scrob server used by this profile.",
+          "json_schema": "{\"type\":\"object\",\"properties\":{\"server_url\":{\"type\":\"string\",\"format\":\"uri\"}},\"required\":[\"server_url\"],\"additionalProperties\":false}",
+          "required": true,
+          "admin_form": {
+            "fields": [
+              {
+                "key": "server_url",
+                "label": "Server URL",
+                "description": "Root URL of your Scrob instance, e.g. http://192.168.1.50:7330 on a LAN or https://scrob.example.com behind a reverse proxy. API paths are added automatically.",
+                "control": "ADMIN_FORM_CONTROL_TEXT",
+                "placeholder": "http://192.168.1.50:7330",
+                "required": true
+              }
+            ]
+          }
+        }
+      ],
+      "watch_sync_provider": {
+        "auth_methods": ["WATCH_SYNC_AUTH_METHOD_API_KEY"],
+        "export_watched": true,
+        "export_unwatched": true,
+        "import_watched": true,
+        "import_ratings": true,
+        "export_ratings": true,
+        "supported_media_types": [
+          "WATCH_SYNC_MEDIA_TYPE_MOVIE",
+          "WATCH_SYNC_MEDIA_TYPE_EPISODE",
+          "WATCH_SYNC_MEDIA_TYPE_SERIES"
+        ],
+        "external_id_namespaces": ["tmdb", "imdb", "tvdb"],
+        "max_batch_size": 50
+      }
+    }
+  ],
+  "category": "Watch Providers",
+  "presentation": {
+    "display_name": "Scrob Watch Provider",
+    "summary": "Sync Silo watch activity with a self-hosted Scrob instance.",
+    "description_markdown": "Imports movie and episode watch history, exports completed watches and unwatches, and syncs movie and series ratings in both directions.",
+    "setup_markdown": "Connect a Silo profile by entering that profile's Scrob server URL and API key (from Scrob's account settings). Different profiles can use different Scrob servers.",
+    "homepage_url": "https://github.com/ellite/scrob",
+    "source_url": "https://github.com/Silo-Server/silo-plugin-watchprovider-scrob",
+    "support_url": "https://github.com/Silo-Server/silo-plugin-watchprovider-scrob/issues",
+    "changelog_url": "https://github.com/Silo-Server/silo-plugin-watchprovider-scrob/releases",
+    "publisher_name": "Silo Server",
+    "publisher_url": "https://github.com/Silo-Server",
+    "license_spdx": "AGPL-3.0-only"
+  }
+}
