@@ -85,6 +85,13 @@ func (c *apiClient) post(ctx context.Context, path string, payload, output any) 
 	return fault
 }
 
+// postQuery is post for a route that takes query parameters, such as the
+// webhook endpoint that authenticates with api_key in the query string.
+func (c *apiClient) postQuery(ctx context.Context, path string, query url.Values, payload, output any) *pluginv1.WatchSyncFault {
+	_, fault := c.request(ctx, http.MethodPost, path, query, payload, output)
+	return fault
+}
+
 // postStatus is post for callers that must read the HTTP status, such as a
 // rating Scrob rejects because it does not track the episode yet.
 func (c *apiClient) postStatus(ctx context.Context, path string, payload, output any) (int, *pluginv1.WatchSyncFault) {

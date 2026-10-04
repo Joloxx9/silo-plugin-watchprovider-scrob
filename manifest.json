@@ -43,6 +43,7 @@
         "import_progress": true,
         "import_ratings": true,
         "export_ratings": true,
+        "scrobble_playback": true,
         "supported_media_types": [
           "WATCH_SYNC_MEDIA_TYPE_MOVIE",
           "WATCH_SYNC_MEDIA_TYPE_EPISODE",

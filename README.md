@@ -7,9 +7,24 @@ Connects Silo profiles to a self-hosted [Scrob](https://github.com/ellite/scrob)
 - Validates each profile's Scrob API key without persisting it in the plugin.
 - Imports movie and episode watch history.
 - Exports completed movie and episode watches, and unwatches.
-- Imports and exports movie and series ratings.
+- Imports and exports movie, series and episode ratings.
+- Imports resume positions from Scrob's continue-watching list.
+- Reports live playback to Scrob's Now Playing, which forwards it to the
+  services connected to Scrob.
 
 The plugin deliberately does not advertise progress, favorites, watchlist, or live scrobble sync. Scrob models a watchlist as arbitrary named lists rather than Silo's single list, which needs its own connection-config design; progress and scrobble are reasonable follow-ups once this lands.
+
+## Live playback
+
+Scrob has no provider-neutral endpoint for reporting playback. Live playback
+reaches it only through a media-server webhook, so the plugin posts the
+Jellyfin webhook shape to Scrob's connection-less webhook route, authenticated
+by the connection's own API key. No extra setup is needed in Scrob.
+
+Scrob forwards Now Playing to the services connected to it, such as Trakt or
+Simkl. If you connect one of those to both Silo and Scrob, it receives the play
+twice: once scrobbled live through Scrob, and once from Silo's own connection.
+Connect each service to one of the two, not both.
 
 ## Server URL
 
