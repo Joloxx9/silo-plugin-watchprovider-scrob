@@ -135,11 +135,37 @@ func watchedStateFromEvent(event scrobHistoryEvent) (*pluginv1.WatchSyncRemoteSt
 
 const unsupportedPlayMessage = "Scrob watched sync requires a movie or episode with a TMDB or TVDB id"
 
+// recentWatchWindow is how far apart two plays of the same title may be and
+// still be the same play. Scrob stores a webhook's play at the moment it ends
+// and Silo stamps its own at the moment it recorded the watch, so the two
+// never match to the second.
+const recentWatchWindow = 10 * time.Minute
+
+// recentWatchPageSize is how much of the newest history is read once per batch
+// to recognise plays Scrob already has. One page covers far more than a single
+// sync can export, and the read costs one request for the whole batch rather
+// than one per event.
+const recentWatchPageSize = 100
+
+// markWatched exports completed plays, skipping any Scrob already recorded.
+//
+// The duplicate check matters because Scrob writes a play of its own when a
+// live scrobble reaches the end of a title. Without it, a viewer who enables
+// playback reporting has every finished title counted twice: once from the
+// scrobble and once from this export.
 func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
+	recent, fault := recentWatches(ctx, client)
+	if fault != nil && connectionWide(fault) {
+		return fault
+	}
 	for _, event := range events {
 		body, ok := watchEventBody(event)
 		if !ok {
 			results.reject(event, unsupportedPlayMessage)
+			continue
+		}
+		if recent.holds(event) {
+			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
 			continue
 		}
 		if fault := client.post(ctx, "/history", body, nil); fault != nil {
@@ -222,4 +248,80 @@ func unwatchItemPath(media *pluginv1.WatchSyncMedia) (string, bool) {
 		query.Set("tvdb_id", strconv.Itoa(ids.TVDB))
 	}
 	return fmt.Sprintf("/history/item?%s", query.Encode()), true
+}
+
+// watchIndex is the newest slice of Scrob's history, keyed the same way the
+// import keys a play, used to recognise a play Scrob already holds.
+type watchIndex struct {
+	at map[string][]time.Time
+}
+
+// holds reports whether Scrob already has this play, allowing for the two
+// sides stamping the same play seconds apart. An event with no timestamp
+// cannot be compared, so it is exported rather than silently dropped.
+func (w watchIndex) holds(event *pluginv1.WatchSyncEvent) bool {
+	occurred := event.GetOccurredAt()
+	if occurred == nil || occurred.CheckValid() != nil || occurred.AsTime().IsZero() {
+		return false
+	}
+	key, _, ok := stateMediaFromScrob(scrobMediaFromEvent(event))
+	if !ok {
+		return false
+	}
+	want := occurred.AsTime()
+	for _, at := range w.at[key] {
+		if at.Sub(want) <= recentWatchWindow && want.Sub(at) <= recentWatchWindow {
+			return true
+		}
+	}
+	return false
+}
+
+// scrobMediaFromEvent describes a host event the way a Scrob history row
+// describes the same title, so one keying function serves both directions.
+func scrobMediaFromEvent(event *pluginv1.WatchSyncEvent) scrobMedia {
+	media := event.GetMedia()
+	ids := idsFromExternal(media.GetExternalIds())
+	out := scrobMedia{
+		Type:   mediaType(media.GetMediaType()),
+		TMDBID: ids.TMDB,
+		TVDBID: ids.TVDB,
+		IMDbID: ids.IMDb,
+		Title:  media.GetTitle(),
+	}
+	if out.Type == "episode" {
+		seriesIDs := idsFromExternal(media.GetSeriesExternalIds())
+		season, episode := int(media.GetSeasonNumber()), int(media.GetEpisodeNumber())
+		out.SeasonNumber = &season
+		out.EpisodeNumber = &episode
+		out.ShowTitle = media.GetSeriesTitle()
+		out.ShowTMDBID = seriesIDs.TMDB
+		out.ShowTVDBID = seriesIDs.TVDB
+	}
+	return out
+}
+
+// recentWatches reads the newest page of history once per batch. A failure is
+// not fatal: the export still runs, it just loses the duplicate check, which
+// is better than refusing to export at all.
+func recentWatches(ctx context.Context, client *apiClient) (watchIndex, *pluginv1.WatchSyncFault) {
+	index := watchIndex{at: map[string][]time.Time{}}
+	query := url.Values{"page": {"1"}, "page_size": {strconv.Itoa(recentWatchPageSize)}}
+	var payload scrobHistoryResponse
+	if fault := client.get(ctx, "/history", query, &payload); fault != nil {
+		return index, fault
+	}
+	for _, event := range payload.Results {
+		if event.WatchedAt == nil {
+			continue
+		}
+		key, _, ok := stateMediaFromScrob(event.Media)
+		if !ok {
+			continue
+		}
+		if at := event.WatchedAt.Time(); !at.IsZero() {
+			index.at[key] = append(index.at[key], at)
+		}
+	}
+	return index, nil
 }
