@@ -13,7 +13,7 @@
       "type": "watch_sync_provider.v1",
       "id": "scrob",
       "display_name": "Scrob",
-      "description": "Bidirectional watch history and movie and series ratings for a self-hosted Scrob instance.",
+      "description": "Bidirectional watch history and movie, series and episode ratings for a self-hosted Scrob instance.",
       "config_schema": [
         {
           "key": "scrob_server",

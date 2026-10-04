@@ -85,6 +85,12 @@ func (c *apiClient) post(ctx context.Context, path string, payload, output any) 
 	return fault
 }
 
+// postStatus is post for callers that must read the HTTP status, such as a
+// rating Scrob rejects because it does not track the episode yet.
+func (c *apiClient) postStatus(ctx context.Context, path string, payload, output any) (int, *pluginv1.WatchSyncFault) {
+	return c.request(ctx, http.MethodPost, path, nil, payload, output)
+}
+
 func (c *apiClient) delete(ctx context.Context, path string, query url.Values) (int, *pluginv1.WatchSyncFault) {
 	return c.request(ctx, http.MethodDelete, path, query, nil, nil)
 }
