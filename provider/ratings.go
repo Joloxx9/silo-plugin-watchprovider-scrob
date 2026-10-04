@@ -50,7 +50,12 @@ func ratingStateFromEntry(entry scrobRatingEntry) (*pluginv1.WatchSyncRemoteStat
 	if value == 0 {
 		return nil, false
 	}
-	media, ok := ratingMediaFromEntry(entry)
+	// A season rating rides on the series' own media row, told apart only by
+	// this field, so it would otherwise import over a whole-series rating.
+	if entry.Media.Type == "series" && entry.SeasonNumber != nil {
+		return nil, false
+	}
+	key, media, ok := stateMediaFromScrob(entry.Media)
 	if !ok {
 		return nil, false
 	}
@@ -58,73 +63,7 @@ func ratingStateFromEntry(entry scrobRatingEntry) (*pluginv1.WatchSyncRemoteStat
 	if at := entry.RatedAt.Time(); !at.IsZero() {
 		rating.RatedAt = timestamppb.New(at)
 	}
-	key, ok := ratingKeyFromEntry(entry)
-	if !ok {
-		return nil, false
-	}
 	return &pluginv1.WatchSyncRemoteState{ProviderItemKey: key, Media: media, Rating: rating}, true
-}
-
-// ratingKeyFromEntry is the provider item key the rating belongs to, matching
-// the keys the watched history import produces for the same titles.
-func ratingKeyFromEntry(entry scrobRatingEntry) (string, bool) {
-	switch entry.Media.Type {
-	case "movie":
-		key := movieKey(scrobIDs{TMDB: entry.Media.TMDBID})
-		return key, key != ""
-	case "series":
-		if entry.SeasonNumber != nil {
-			return "", false
-		}
-		key := showKey(scrobIDs{TMDB: entry.Media.TMDBID})
-		return key, key != ""
-	case "episode":
-		if entry.Media.SeasonNumber == nil || entry.Media.EpisodeNumber == nil {
-			return "", false
-		}
-		showIDs := scrobIDs{TMDB: entry.Media.ShowTMDBID, TVDB: entry.Media.ShowTVDBID}
-		episodeIDs := scrobIDs{TMDB: entry.Media.TMDBID, TVDB: entry.Media.TVDBID, IMDb: entry.Media.IMDbID}
-		key := episodeKey(showIDs, *entry.Media.SeasonNumber, *entry.Media.EpisodeNumber, episodeIDs)
-		return key, key != ""
-	default:
-		return "", false
-	}
-}
-
-func ratingMediaFromEntry(entry scrobRatingEntry) (*pluginv1.WatchSyncMedia, bool) {
-	switch entry.Media.Type {
-	case "movie":
-		ids := scrobIDs{TMDB: entry.Media.TMDBID}
-		return &pluginv1.WatchSyncMedia{
-			MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
-			Title:       entry.Media.Title,
-			ExternalIds: externalIDsFromScrob(ids),
-		}, true
-	case "series":
-		ids := scrobIDs{TMDB: entry.Media.TMDBID}
-		return &pluginv1.WatchSyncMedia{
-			MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_SERIES,
-			Title:       entry.Media.Title,
-			ExternalIds: externalIDsFromScrob(ids),
-		}, true
-	case "episode":
-		if entry.Media.SeasonNumber == nil || entry.Media.EpisodeNumber == nil {
-			return nil, false
-		}
-		showIDs := scrobIDs{TMDB: entry.Media.ShowTMDBID, TVDB: entry.Media.ShowTVDBID}
-		episodeIDs := scrobIDs{TMDB: entry.Media.TMDBID, TVDB: entry.Media.TVDBID, IMDb: entry.Media.IMDbID}
-		return &pluginv1.WatchSyncMedia{
-			MediaType:         pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE,
-			Title:             entry.Media.Title,
-			ExternalIds:       externalIDsFromScrob(episodeIDs),
-			SeriesTitle:       entry.Media.ShowTitle,
-			SeriesExternalIds: externalIDsFromScrob(showIDs),
-			SeasonNumber:      int32(*entry.Media.SeasonNumber),
-			EpisodeNumber:     int32(*entry.Media.EpisodeNumber),
-		}, true
-	default:
-		return nil, false
-	}
 }
 
 // providerRating rounds a rating to the integer scale; 0 means unrated.

@@ -91,6 +91,8 @@ func (s *Server) ListRemoteState(ctx context.Context, req *pluginv1.WatchSyncLis
 	switch kind {
 	case pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_WATCHED:
 		return s.listWatched(ctx, client, req)
+	case pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_PROGRESS:
+		return s.listProgress(ctx, client)
 	case pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_RATING:
 		return s.listRatings(ctx, client)
 	default:

@@ -40,6 +40,7 @@
         "export_watched": true,
         "export_unwatched": true,
         "import_watched": true,
+        "import_progress": true,
         "import_ratings": true,
         "export_ratings": true,
         "supported_media_types": [

@@ -132,3 +132,58 @@ func mediaType(value pluginv1.WatchSyncMediaType) string {
 		return ""
 	}
 }
+
+// stateMediaFromScrob maps one Scrob media row to the provider item key and
+// the media description every remote state shares, so a rating, a play and a
+// resume position for the same title land on one key in Silo.
+//
+// A series row is accepted here; callers that must reject a season-scoped
+// entry check that themselves, because the season number sits beside the media
+// rather than inside it.
+func stateMediaFromScrob(media scrobMedia) (string, *pluginv1.WatchSyncMedia, bool) {
+	switch media.Type {
+	case "movie":
+		ids := scrobIDs{TMDB: media.TMDBID, TVDB: media.TVDBID, IMDb: media.IMDbID}
+		key := movieKey(ids)
+		if key == "" {
+			return "", nil, false
+		}
+		return key, &pluginv1.WatchSyncMedia{
+			MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
+			Title:       media.Title,
+			ExternalIds: externalIDsFromScrob(ids),
+		}, true
+	case "series":
+		ids := scrobIDs{TMDB: media.TMDBID, TVDB: media.TVDBID, IMDb: media.IMDbID}
+		key := showKey(ids)
+		if key == "" {
+			return "", nil, false
+		}
+		return key, &pluginv1.WatchSyncMedia{
+			MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_SERIES,
+			Title:       media.Title,
+			ExternalIds: externalIDsFromScrob(ids),
+		}, true
+	case "episode":
+		if media.SeasonNumber == nil || media.EpisodeNumber == nil {
+			return "", nil, false
+		}
+		showIDs := scrobIDs{TMDB: media.ShowTMDBID, TVDB: media.ShowTVDBID}
+		episodeIDs := scrobIDs{TMDB: media.TMDBID, TVDB: media.TVDBID, IMDb: media.IMDbID}
+		key := episodeKey(showIDs, *media.SeasonNumber, *media.EpisodeNumber, episodeIDs)
+		if key == "" {
+			return "", nil, false
+		}
+		return key, &pluginv1.WatchSyncMedia{
+			MediaType:         pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE,
+			Title:             media.Title,
+			ExternalIds:       externalIDsFromScrob(episodeIDs),
+			SeriesTitle:       media.ShowTitle,
+			SeriesExternalIds: externalIDsFromScrob(showIDs),
+			SeasonNumber:      int32(*media.SeasonNumber),
+			EpisodeNumber:     int32(*media.EpisodeNumber),
+		}, true
+	default:
+		return "", nil, false
+	}
+}

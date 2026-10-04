@@ -100,3 +100,15 @@ type scrobRatingIn struct {
 	MediaType string  `json:"media_type"`
 	Rating    float64 `json:"rating"`
 }
+
+// scrobProgressEntry is one row of Scrob's continue-watching list: a title with
+// a stored resume position.
+type scrobProgressEntry struct {
+	Media           scrobMedia `json:"media"`
+	ProgressPercent float64    `json:"progress_percent"`
+	WatchedAt       *scrobTime `json:"watched_at"`
+}
+
+type scrobContinueWatchingResponse struct {
+	ContinueWatching []scrobProgressEntry `json:"continue_watching"`
+}
