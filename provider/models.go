@@ -112,3 +112,16 @@ type scrobProgressEntry struct {
 type scrobContinueWatchingResponse struct {
 	ContinueWatching []scrobProgressEntry `json:"continue_watching"`
 }
+
+// scrobItemEvent is one completed watch of a single title.
+type scrobItemEvent struct {
+	ID        int        `json:"id"`
+	WatchedAt *scrobTime `json:"watched_at"`
+}
+
+// scrobItemEventsResponse is GET /history/item-events: every completed watch
+// Scrob holds for one movie or episode.
+type scrobItemEventsResponse struct {
+	Watched bool             `json:"watched"`
+	Events  []scrobItemEvent `json:"events"`
+}

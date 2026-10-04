@@ -12,7 +12,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func watchedExportServer(t *testing.T, existing []scrobHistoryEvent) (*apiClient, *[]string, func()) {
+// watchedExportServer answers the per-title lookup with the plays Scrob
+// already holds, and records every exported write.
+func watchedExportServer(t *testing.T, held []scrobItemEvent) (*apiClient, *[]string, func()) {
 	t.Helper()
 	posted := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -21,7 +23,10 @@ func watchedExportServer(t *testing.T, existing []scrobHistoryEvent) (*apiClient
 			_, _ = w.Write([]byte(`{}`))
 			return
 		}
-		_ = json.NewEncoder(w).Encode(scrobHistoryResponse{Page: 1, TotalPages: 1, Results: existing})
+		if r.URL.Query().Get("media_type") == "" {
+			t.Errorf("per-title lookup without a media_type: %s", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(scrobItemEventsResponse{Watched: len(held) > 0, Events: held})
 	}))
 	client, err := newAPIClient(server.URL, "key", server.Client())
 	if err != nil {
@@ -48,11 +53,8 @@ func movieWatch(at time.Time) *pluginv1.WatchSyncEvent {
 // by this export.
 func TestMarkWatchedSkipsAPlayScrobAlreadyRecorded(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Second)
-	scrobTimeAt := scrobTime(at.Add(-30 * time.Second))
-	client, posted, done := watchedExportServer(t, []scrobHistoryEvent{{
-		Media:     scrobMedia{Type: "movie", TMDBID: 42, Title: "Heat"},
-		WatchedAt: &scrobTimeAt,
-	}})
+	close := scrobTime(at.Add(-30 * time.Second))
+	client, posted, done := watchedExportServer(t, []scrobItemEvent{{ID: 1, WatchedAt: &close}})
 	defer done()
 
 	events := []*pluginv1.WatchSyncEvent{movieWatch(at)}
@@ -74,10 +76,7 @@ func TestMarkWatchedSkipsAPlayScrobAlreadyRecorded(t *testing.T) {
 func TestMarkWatchedExportsARewatchHoursLater(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Second)
 	old := scrobTime(at.Add(-6 * time.Hour))
-	client, posted, done := watchedExportServer(t, []scrobHistoryEvent{{
-		Media:     scrobMedia{Type: "movie", TMDBID: 42, Title: "Heat"},
-		WatchedAt: &old,
-	}})
+	client, posted, done := watchedExportServer(t, []scrobItemEvent{{ID: 1, WatchedAt: &old}})
 	defer done()
 
 	events := []*pluginv1.WatchSyncEvent{movieWatch(at)}
