@@ -104,9 +104,11 @@ type scrobRatingIn struct {
 // scrobProgressEntry is one row of Scrob's continue-watching list: a title with
 // a stored resume position.
 type scrobProgressEntry struct {
-	Media           scrobMedia `json:"media"`
-	ProgressPercent float64    `json:"progress_percent"`
-	WatchedAt       *scrobTime `json:"watched_at"`
+	Media scrobMedia `json:"media"`
+	// Scrob's `progress_percent` is a fraction of the runtime, from 0 to 1,
+	// despite the name: its completion threshold is `>= 0.90`.
+	ProgressFraction float64    `json:"progress_percent"`
+	WatchedAt        *scrobTime `json:"watched_at"`
 }
 
 type scrobContinueWatchingResponse struct {

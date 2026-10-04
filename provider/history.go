@@ -168,14 +168,27 @@ func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.Watc
 	return nil
 }
 
+// markUnwatched removes the play Silo no longer holds.
+//
+// When the event says which play it was, only that one is deleted: Scrob keeps
+// a row per viewing, and dropping the title's whole history because one
+// rewatch was undone would destroy counts Silo never asked about. Without a
+// timestamp there is nothing to single out, so the title's history is removed
+// as before.
 func markUnwatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
 	for _, event := range events {
-		path, ok := unwatchItemPath(event.GetMedia())
+		path, itemQuery, ok := unwatchItemPath(event.GetMedia())
 		if !ok {
 			results.reject(event, unsupportedPlayMessage)
 			continue
 		}
-		status, fault := client.delete(ctx, path, nil)
+		query := itemQuery
+		if eventID, found, fault := scrobPlayAt(ctx, client, event); fault != nil && connectionWide(fault) {
+			return fault
+		} else if found {
+			path, query = fmt.Sprintf("/history/event/%d", eventID), nil
+		}
+		status, fault := client.delete(ctx, path, query)
 		switch {
 		case fault == nil:
 			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED)
@@ -219,14 +232,17 @@ func watchEventBody(event *pluginv1.WatchSyncEvent) (scrobWatchEventCreate, bool
 	return body, true
 }
 
-func unwatchItemPath(media *pluginv1.WatchSyncMedia) (string, bool) {
+// unwatchItemPath names the title to remove. The query is returned separately
+// because the request builder escapes the path: a "?" folded into it becomes
+// %3F, the route never matches, and Scrob's 404 reads as "already unwatched".
+func unwatchItemPath(media *pluginv1.WatchSyncMedia) (string, url.Values, bool) {
 	kind := mediaType(media.GetMediaType())
 	if kind != "movie" && kind != "episode" {
-		return "", false
+		return "", nil, false
 	}
 	ids := idsFromExternal(media.GetExternalIds())
 	if ids.TMDB <= 0 && ids.TVDB <= 0 {
-		return "", false
+		return "", nil, false
 	}
 	query := url.Values{"media_type": {kind}}
 	if ids.TMDB > 0 {
@@ -235,7 +251,7 @@ func unwatchItemPath(media *pluginv1.WatchSyncMedia) (string, bool) {
 	if ids.TVDB > 0 {
 		query.Set("tvdb_id", strconv.Itoa(ids.TVDB))
 	}
-	return fmt.Sprintf("/history/item?%s", query.Encode()), true
+	return "/history/item", query, true
 }
 
 // scrobAlreadyHasPlay reports whether Scrob already holds this play.
@@ -303,4 +319,39 @@ func itemEventsQuery(media *pluginv1.WatchSyncMedia) (url.Values, bool) {
 		}
 	}
 	return query, true
+}
+
+// scrobPlayAt finds the Scrob watch event for this play, so an unwatch removes
+// one viewing rather than the title's whole history. It reuses the per-title
+// lookup the duplicate check already relies on.
+//
+// A missing timestamp, an unidentifiable title or a failed lookup simply means
+// no single play was found, and the caller falls back to removing the item.
+func scrobPlayAt(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent) (int, bool, *pluginv1.WatchSyncFault) {
+	occurred := event.GetOccurredAt()
+	if occurred == nil || occurred.CheckValid() != nil || occurred.AsTime().IsZero() {
+		return 0, false, nil
+	}
+	query, ok := itemEventsQuery(event.GetMedia())
+	if !ok {
+		return 0, false, nil
+	}
+	var payload scrobItemEventsResponse
+	if fault := client.get(ctx, "/history/item-events", query, &payload); fault != nil {
+		return 0, false, fault
+	}
+	want := occurred.AsTime()
+	for _, held := range payload.Events {
+		if held.WatchedAt == nil || held.ID == 0 {
+			continue
+		}
+		at := held.WatchedAt.Time()
+		if at.IsZero() {
+			continue
+		}
+		if at.Sub(want) <= recentWatchWindow && want.Sub(at) <= recentWatchWindow {
+			return held.ID, true, nil
+		}
+	}
+	return 0, false, nil
 }

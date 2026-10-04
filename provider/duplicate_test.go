@@ -120,3 +120,70 @@ func TestMarkWatchedStillExportsWhenTheHistoryReadFails(t *testing.T) {
 		t.Errorf("posted %v, want the export to proceed without the duplicate check", posted)
 	}
 }
+
+// Scrob keeps a row per viewing. Undoing one rewatch must not take the title's
+// whole history with it.
+func TestMarkUnwatchedDeletesOnlyThePlayAtThatTime(t *testing.T) {
+	at := time.Now().UTC().Truncate(time.Second)
+	match := scrobTime(at.Add(-20 * time.Second))
+	other := scrobTime(at.Add(-72 * time.Hour))
+	var deleted string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleted = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(scrobItemEventsResponse{Watched: true, Events: []scrobItemEvent{
+			{ID: 77, WatchedAt: &match},
+			{ID: 12, WatchedAt: &other},
+		}})
+	}))
+	defer server.Close()
+
+	client, err := newAPIClient(server.URL, "key", server.Client())
+	if err != nil {
+		t.Fatalf("newAPIClient() error: %v", err)
+	}
+	events := []*pluginv1.WatchSyncEvent{movieWatch(at)}
+	results := newResultSet(events)
+	if fault := markUnwatched(context.Background(), client, events, results); fault != nil {
+		t.Fatalf("markUnwatched() fault: %v", fault)
+	}
+	if want := "/api/proxy/history/event/77"; deleted != want {
+		t.Errorf("deleted %q, want %q (only the play at that time)", deleted, want)
+	}
+}
+
+// With no timestamp there is nothing to single out, so the title's history is
+// removed as before rather than the unwatch silently doing nothing.
+func TestMarkUnwatchedWithoutATimeRemovesTheItem(t *testing.T) {
+	var deleted string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleted = r.URL.Path
+			if r.URL.Query().Get("tmdb_id") != "42" {
+				t.Errorf("item delete without the title's id: %s", r.URL.RawQuery)
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(scrobItemEventsResponse{})
+	}))
+	defer server.Close()
+
+	client, err := newAPIClient(server.URL, "key", server.Client())
+	if err != nil {
+		t.Fatalf("newAPIClient() error: %v", err)
+	}
+	event := movieWatch(time.Now().UTC())
+	event.OccurredAt = nil
+	events := []*pluginv1.WatchSyncEvent{event}
+	results := newResultSet(events)
+	if fault := markUnwatched(context.Background(), client, events, results); fault != nil {
+		t.Fatalf("markUnwatched() fault: %v", fault)
+	}
+	if want := "/api/proxy/history/item"; deleted != want {
+		t.Errorf("deleted path %q, want %q", deleted, want)
+	}
+}

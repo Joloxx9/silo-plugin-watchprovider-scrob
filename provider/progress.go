@@ -38,18 +38,24 @@ func (s *Server) listProgress(ctx context.Context, client *apiClient) (*pluginv1
 // progressStateFromEntry maps one continue-watching row. It reports false for a
 // title the plugin cannot identify and for a position outside [0, 100).
 //
+// Scrob stores the position as a fraction of the runtime, not a percentage:
+// its own completion threshold reads `progress_percent >= 0.90`. The contract
+// wants [0, 100), so the fraction is scaled here. Reporting it unscaled would
+// make every resume position round to nothing.
+//
 // The contract reserves 100 for a completed play, which belongs in the watched
 // family: importing it as progress would leave Silo showing a title as both
 // finished and resumable.
 func progressStateFromEntry(entry scrobProgressEntry) (*pluginv1.WatchSyncRemoteState, bool) {
-	if entry.ProgressPercent <= 0 || entry.ProgressPercent >= 100 {
+	percent := entry.ProgressFraction * 100
+	if percent <= 0 || percent >= 100 {
 		return nil, false
 	}
 	key, media, ok := stateMediaFromScrob(entry.Media)
 	if !ok {
 		return nil, false
 	}
-	progress := &pluginv1.WatchSyncRemoteProgressState{ProgressPercent: entry.ProgressPercent}
+	progress := &pluginv1.WatchSyncRemoteProgressState{ProgressPercent: percent}
 	// Scrob reuses the event's updated_at as the display timestamp for a
 	// progress row, which is when the position was last written.
 	if entry.WatchedAt != nil {

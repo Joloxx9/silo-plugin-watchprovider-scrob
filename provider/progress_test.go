@@ -31,11 +31,11 @@ func progressServer(t *testing.T, entries []scrobProgressEntry) (*apiClient, fun
 func TestListProgressImportsMoviesAndEpisodes(t *testing.T) {
 	season, episode := 2, 5
 	client, done := progressServer(t, []scrobProgressEntry{
-		{Media: scrobMedia{Type: "movie", TMDBID: 42, Title: "Heat"}, ProgressPercent: 37.5},
+		{Media: scrobMedia{Type: "movie", TMDBID: 42, Title: "Heat"}, ProgressFraction: 0.375},
 		{Media: scrobMedia{
 			Type: "episode", TMDBID: 777, Title: "Ep", SeasonNumber: &season, EpisodeNumber: &episode,
 			ShowTitle: "Show", ShowTMDBID: 100,
-		}, ProgressPercent: 10},
+		}, ProgressFraction: 0.10},
 	})
 	defer done()
 
@@ -50,8 +50,9 @@ func TestListProgressImportsMoviesAndEpisodes(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("listProgress() = %d items, want 2", len(items))
 	}
+	// Scrob reports 0.375 of the runtime; the contract wants 37.5 percent.
 	if got := items[0].GetProgress().GetProgressPercent(); got != 37.5 {
-		t.Errorf("movie progress = %v, want 37.5", got)
+		t.Errorf("movie progress = %v, want 37.5 (Scrob sent the fraction 0.375)", got)
 	}
 	if got := items[0].GetProviderItemKey(); got != movieKey(scrobIDs{TMDB: 42}) {
 		t.Errorf("movie key = %q, want the watched-history movie key", got)
@@ -72,8 +73,8 @@ func TestListProgressImportsMoviesAndEpisodes(t *testing.T) {
 // at once.
 func TestListProgressSkipsPositionsOutsideRange(t *testing.T) {
 	client, done := progressServer(t, []scrobProgressEntry{
-		{Media: scrobMedia{Type: "movie", TMDBID: 1, Title: "Done"}, ProgressPercent: 100},
-		{Media: scrobMedia{Type: "movie", TMDBID: 2, Title: "Unstarted"}, ProgressPercent: 0},
+		{Media: scrobMedia{Type: "movie", TMDBID: 1, Title: "Done"}, ProgressFraction: 1.0},
+		{Media: scrobMedia{Type: "movie", TMDBID: 2, Title: "Unstarted"}, ProgressFraction: 0},
 	})
 	defer done()
 
