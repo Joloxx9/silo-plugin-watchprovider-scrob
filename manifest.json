@@ -58,7 +58,7 @@
   "presentation": {
     "display_name": "Scrob Watch Provider",
     "summary": "Sync Silo watch activity with a self-hosted Scrob instance.",
-    "description_markdown": "Imports movie and episode watch history, exports completed watches and unwatches, and syncs movie and series ratings in both directions.",
+    "description_markdown": "Imports movie and episode watch history and exports completed watches and unwatches. Syncs movie, series and episode ratings in both directions. Imports resume positions from Scrob's continue-watching list and reports live playback to Scrob's Now Playing. The plugin talks only to the Scrob server URL you give it; Scrob may in turn forward Now Playing to services connected to it, such as Trakt or Simkl.",
     "setup_markdown": "Connect a Silo profile by entering that profile's Scrob server URL and API key (from Scrob's account settings). Different profiles can use different Scrob servers.",
     "homepage_url": "https://github.com/ellite/scrob",
     "source_url": "https://github.com/Silo-Server/silo-plugin-watchprovider-scrob",
