@@ -35,6 +35,7 @@ func TestListRemoteStateRoutesEachFamilyToItsEndpoint(t *testing.T) {
 		{"watched", pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_WATCHED, "/api/proxy/history"},
 		{"progress", pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_PROGRESS, "/api/proxy/history/continue-watching"},
 		{"rating", pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_RATING, "/api/proxy/ratings"},
+		{"dropped", pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_DROPPED, "/api/proxy/history/dropped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked string

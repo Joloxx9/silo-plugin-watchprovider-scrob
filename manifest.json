@@ -1,6 +1,6 @@
 {
   "plugin_id": "silo.watchprovider.scrob",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "checksum": "__CHECKSUM__",
   "silo_api_version": "v1",
   "supported_platforms": [
@@ -13,7 +13,7 @@
       "type": "watch_sync_provider.v1",
       "id": "scrob",
       "display_name": "Scrob",
-      "description": "Bidirectional watch history and movie, series and episode ratings for a self-hosted Scrob instance.",
+      "description": "Bidirectional watch history, resume progress, movie and series ratings, and dropped shows for a self-hosted Scrob instance.",
       "config_schema": [
         {
           "key": "scrob_server",
@@ -44,6 +44,7 @@
         "import_ratings": true,
         "export_ratings": true,
         "scrobble_playback": true,
+        "sync_dropped": true,
         "supported_media_types": [
           "WATCH_SYNC_MEDIA_TYPE_MOVIE",
           "WATCH_SYNC_MEDIA_TYPE_EPISODE",
@@ -58,14 +59,14 @@
   "presentation": {
     "display_name": "Scrob Watch Provider",
     "summary": "Sync Silo watch activity with a self-hosted Scrob instance.",
-    "description_markdown": "Imports movie and episode watch history, exports completed watches and unwatches, and syncs movie and series ratings in both directions.",
+    "description_markdown": "Imports movie and episode watch history and resume points, exports completed watches and unwatches, syncs movie and series ratings in both directions, and syncs dropped shows. Built against stock upstream Silo (plugin SDK v0.24.0).",
     "setup_markdown": "Connect a Silo profile by entering that profile's Scrob server URL and API key (from Scrob's account settings). Different profiles can use different Scrob servers.",
     "homepage_url": "https://github.com/ellite/scrob",
-    "source_url": "https://github.com/Silo-Server/silo-plugin-watchprovider-scrob",
-    "support_url": "https://github.com/Silo-Server/silo-plugin-watchprovider-scrob/issues",
-    "changelog_url": "https://github.com/Silo-Server/silo-plugin-watchprovider-scrob/releases",
-    "publisher_name": "Silo Server",
-    "publisher_url": "https://github.com/Silo-Server",
+    "source_url": "https://github.com/Joloxx9/silo-plugin-watchprovider-scrob-local",
+    "support_url": "https://github.com/Joloxx9/silo-plugin-watchprovider-scrob-local/issues",
+    "changelog_url": "https://github.com/Joloxx9/silo-plugin-watchprovider-scrob-local/releases",
+    "publisher_name": "Joloxx9",
+    "publisher_url": "https://github.com/Joloxx9",
     "license_spdx": "AGPL-3.0-only"
   }
 }
