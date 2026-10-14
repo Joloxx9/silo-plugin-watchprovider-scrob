@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"net/url"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
@@ -38,6 +40,9 @@ type jellyfinItem struct {
 
 type jellyfinPlayState struct {
 	PositionTicks int64 `json:"PositionTicks"`
+	// IsPaused tells Scrob a progress notification is a pause. Without it
+	// Scrob shows the session as playing and forwards no pause.
+	IsPaused bool `json:"IsPaused"`
 }
 
 type jellyfinSession struct {
@@ -53,20 +58,37 @@ type jellyfinWebhook struct {
 
 const errScrobbleNeedsExternalID = "Scrob playback reporting requires a movie or episode with a TMDB id"
 
+// errScrobbleServerError explains a webhook Scrob answered with a server
+// error. The usual cause is a title Scrob has not seen yet arriving without a
+// name, from a Silo that predates titles on playback events: Scrob cannot
+// create the title and answers 500 for every start, progress and stop.
+const errScrobbleServerError = "Scrob could not record live playback for this title (HTTP %d). If Scrob has not seen the title before, update Silo so playback events carry titles; the next watched sync still records the play."
+
 // scrobblePlayback reports one playback transition per event. Scrob keys a
 // session by the id the webhook carries, so start, pause and stop for one
-// playback must repeat the same `playback_session_id`.
-func scrobblePlayback(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet, notification string) *pluginv1.WatchSyncFault {
+// playback must repeat the same `playback_session_id`. A pause is a progress
+// notification with paused set.
+//
+// A server error from the webhook is a rejection, not a temporary fault: a
+// playback transition is only worth reporting while it is current, and the
+// usual cause (see errScrobbleServerError) fails the same way on every retry.
+func scrobblePlayback(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet, notification string, paused bool) *pluginv1.WatchSyncFault {
+	// Scrob's webhook route accepts the key only as a query parameter, so
+	// unlike every other request this one carries it in the URL.
 	query := url.Values{"api_key": {client.apiKey}}
 	for _, event := range events {
-		body, ok := jellyfinWebhookBody(event, notification)
+		body, ok := jellyfinWebhookBody(event, notification, paused)
 		if !ok {
 			results.reject(event, errScrobbleNeedsExternalID)
 			continue
 		}
-		if fault := client.postQuery(ctx, jellyfinWebhookPath, query, body, nil); fault != nil {
+		if status, fault := client.postQuery(ctx, jellyfinWebhookPath, query, body, nil); fault != nil {
 			if connectionWide(fault) {
 				return fault
+			}
+			if status >= http.StatusInternalServerError {
+				results.reject(event, fmt.Sprintf(errScrobbleServerError, status))
+				continue
 			}
 			results.fail(event, fault)
 			continue
@@ -76,7 +98,7 @@ func scrobblePlayback(ctx context.Context, client *apiClient, events []*pluginv1
 	return nil
 }
 
-func jellyfinWebhookBody(event *pluginv1.WatchSyncEvent, notification string) (jellyfinWebhook, bool) {
+func jellyfinWebhookBody(event *pluginv1.WatchSyncEvent, notification string, paused bool) (jellyfinWebhook, bool) {
 	media := event.GetMedia()
 	kind := mediaType(media.GetMediaType())
 	if kind != "movie" && kind != "episode" {
@@ -110,8 +132,11 @@ func jellyfinWebhookBody(event *pluginv1.WatchSyncEvent, notification string) (j
 		NotificationType: notification,
 		Item:             item,
 		Session: jellyfinSession{
-			ID:        scrobbleSessionID(event),
-			PlayState: jellyfinPlayState{PositionTicks: int64(event.GetPositionSeconds() * ticksPerSecond)},
+			ID: scrobbleSessionID(event),
+			PlayState: jellyfinPlayState{
+				PositionTicks: int64(event.GetPositionSeconds() * ticksPerSecond),
+				IsPaused:      paused,
+			},
 		},
 	}, true
 }

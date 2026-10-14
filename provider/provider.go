@@ -164,11 +164,11 @@ func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.Watch
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_REMOVE_RATING:
 		return writeRatings(ctx, client, pending, results, true)
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_START:
-		return scrobblePlayback(ctx, client, pending, results, "PlaybackStart")
+		return scrobblePlayback(ctx, client, pending, results, "PlaybackStart", false)
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_PAUSE:
-		return scrobblePlayback(ctx, client, pending, results, "PlaybackProgress")
+		return scrobblePlayback(ctx, client, pending, results, "PlaybackProgress", true)
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP:
-		return scrobblePlayback(ctx, client, pending, results, "PlaybackStop")
+		return scrobblePlayback(ctx, client, pending, results, "PlaybackStop", false)
 	default:
 		for _, event := range pending {
 			results.reject(event, "Scrob does not support this watch operation")

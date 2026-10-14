@@ -86,10 +86,10 @@ func (c *apiClient) post(ctx context.Context, path string, payload, output any) 
 }
 
 // postQuery is post for a route that takes query parameters, such as the
-// webhook endpoint that authenticates with api_key in the query string.
-func (c *apiClient) postQuery(ctx context.Context, path string, query url.Values, payload, output any) *pluginv1.WatchSyncFault {
-	_, fault := c.request(ctx, http.MethodPost, path, query, payload, output)
-	return fault
+// webhook endpoint that authenticates with api_key in the query string. It
+// returns the HTTP status alongside the fault, zero when no response arrived.
+func (c *apiClient) postQuery(ctx context.Context, path string, query url.Values, payload, output any) (int, *pluginv1.WatchSyncFault) {
+	return c.request(ctx, http.MethodPost, path, query, payload, output)
 }
 
 // postStatus is post for callers that must read the HTTP status, such as a
@@ -124,9 +124,11 @@ func (c *apiClient) request(ctx context.Context, method, path string, query url.
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	// The key travels as a header, never in the URL or query string, so
-	// unlike providers authenticated by URL parameter there is no credential
-	// to redact from a transport error.
+	// The key travels as a header. The one exception is live playback:
+	// Scrob's webhook route reads the key only from the query string, so
+	// those requests also carry it in the URL (see scrobblePlayback), where
+	// Scrob's access log and any reverse proxy in front of it can record it.
+	// The transport error below never includes the URL.
 	req.Header.Set("X-Api-Key", c.apiKey)
 
 	resp, err := c.http.Do(req)
