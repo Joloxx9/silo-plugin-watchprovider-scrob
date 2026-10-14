@@ -7,7 +7,7 @@ plugin-specific workflow.
 
 ## Before you start
 
-Open an [issue](https://github.com/Silo-Server/silo-plugin-watchprovider-scrob/issues)
+Open an [issue](https://github.com/Joloxx9/silo-plugin-watchprovider-scrob/issues)
 before changing authentication, reconciliation, idempotency, supported state,
 configuration, or the advertised capability. This repository owns the Scrob
 adapter; plugin contracts belong in

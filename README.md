@@ -7,12 +7,12 @@ Connects Silo profiles to a self-hosted [Scrob](https://github.com/ellite/scrob)
 - Validates each profile's Scrob API key without persisting it in the plugin.
 - Imports movie and episode watch history.
 - Exports completed movie and episode watches, and unwatches, skipping a play Scrob already recorded.
-- Imports and exports movie, series and episode ratings.
+- Imports and exports movie and series ratings.
 - Imports resume positions from Scrob's continue-watching list.
-- Reports live playback to Scrob's Now Playing, which forwards it to the
-  services connected to Scrob.
+- Reports live playback, including pauses, to Scrob's Now Playing, which
+  forwards it to the services connected to Scrob.
 
-The plugin deliberately does not advertise progress, favorites, watchlist, or live scrobble sync. Scrob models a watchlist as arbitrary named lists rather than Silo's single list, which needs its own connection-config design; progress and scrobble are reasonable follow-ups once this lands.
+The plugin deliberately does not advertise favorites or watchlist sync. Scrob models a watchlist as arbitrary named lists rather than Silo's single list, which needs its own connection-config design.
 
 ## Live playback
 
@@ -26,13 +26,22 @@ Simkl. If you connect one of those to both Silo and Scrob, it receives the play
 twice: once scrobbled live through Scrob, and once from Silo's own connection.
 Connect each service to one of the two, not both.
 
+Scrob creates a title it has not seen before from the name the webhook
+carries. Silo servers that predate titles on playback events send none, and
+Scrob then answers every start, pause and stop for that title with a server
+error. The plugin reports such an event as rejected, with a message saying so,
+instead of retrying it. The next watched sync still records the play; updating
+Silo fixes live playback for those titles.
+
 ## Server URL
 
 Scrob is self-hosted, so each connection supplies its own server URL alongside the API key: different profiles can connect to different Scrob servers. A standard Scrob deployment (its `docker-compose.yaml`) publishes only the frontend's port; the plugin routes every request through `/api/proxy/*`, which the frontend forwards to the backend for a request carrying an API key (see `frontend/src/middleware.ts` and `frontend/src/pages/api/proxy/[...path].ts` in the Scrob repo). A bare `host:port` URL defaults to `http://`, since a self-hosted LAN address is overwhelmingly plain HTTP rather than TLS.
 
 ## Ratings
 
-Scrob rates movies and series from 0 to 10 in increments of whatever precision its UI allows; Silo's plugin contract uses whole ratings from 1 to 10. Import rounds a Scrob score half up and clamps it to 1-10, and export writes the rating as the title's score; a removal clears it.
+Silo syncs movie and series ratings. Scrob also rates episodes, and the plugin can read and write them, but Silo neither sends nor accepts episode ratings yet, so none are synced.
+
+Scrob rates movies, series and episodes from 0 to 10 in increments of whatever precision its UI allows; Silo's plugin contract uses whole ratings from 1 to 10. Import rounds a Scrob score half up and clamps it to 1-10, and export writes the rating as the title's score; a removal clears it.
 
 `GET /ratings` is a single unpaginated response covering every rating the account has - movies, shows, seasons, and episodes together - so every import is a complete snapshot. The endpoint reports `tmdb_id` on a rated item but not `imdb_id` or `tvdb_id`, even though Scrob stores both, so a TVDB-only rated show cannot be matched and is reported as absent rather than imported under the wrong identity.
 
@@ -41,6 +50,12 @@ A season rating is stored against the same series row as a whole-series rating i
 ## Watched history
 
 `GET /history` pages individual watch events rather than a per-title summary. The plugin reads every page of one connection's history inside a single `ListRemoteState` call and aggregates it into one state per title (play count and the most recent watch time) before returning anything, since a per-event read spread across pages cannot otherwise be reconciled into the host's per-title state. A very large history can exceed the sync time budget; the sync retries on the next scheduled run when it does.
+
+## Network access and external services
+
+The plugin makes outbound requests only to the Scrob server URL each connection supplies, authenticated with that connection's own API key. It contacts no other host and sends no telemetry. Scrob itself may forward Now Playing to services connected to it (see Live playback above); that forwarding happens inside Scrob, not in the plugin.
+
+The API key travels in a request header, except for live playback reports: Scrob's webhook route accepts the key only as an `api_key` query parameter, so those requests carry it in the URL. Scrob's access log, and the log of any reverse proxy in front of Scrob, can therefore record the key. Restrict who can read those logs.
 
 ## Setup
 

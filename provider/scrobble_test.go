@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
@@ -47,7 +48,7 @@ func TestScrobbleReportsEpisodeAsJellyfinWebhook(t *testing.T) {
 	}
 	events := []*pluginv1.WatchSyncEvent{event}
 	results := newResultSet(events)
-	if fault := scrobblePlayback(context.Background(), client, events, results, "PlaybackStart"); fault != nil {
+	if fault := scrobblePlayback(context.Background(), client, events, results, "PlaybackStart", false); fault != nil {
 		t.Fatalf("scrobblePlayback() fault: %v", fault)
 	}
 
@@ -100,10 +101,76 @@ func TestScrobbleRejectsUnplayableMedia(t *testing.T) {
 		},
 	}}
 	results := newResultSet(events)
-	if fault := scrobblePlayback(context.Background(), client, events, results, "PlaybackStart"); fault != nil {
+	if fault := scrobblePlayback(context.Background(), client, events, results, "PlaybackStart", false); fault != nil {
 		t.Fatalf("scrobblePlayback() fault: %v", fault)
 	}
 	if r := results.list(); len(r) != 1 || r[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_REJECTED {
 		t.Errorf("results = %+v, want one REJECTED", r)
+	}
+}
+
+// A pause is a progress notification with IsPaused set; Scrob reads that field
+// to show the session as paused and to forward the pause.
+func TestScrobbleReportsPauseAsPaused(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, err := newAPIClient(server.URL, "key", server.Client())
+	if err != nil {
+		t.Fatalf("newAPIClient() error: %v", err)
+	}
+	for _, paused := range []bool{true, false} {
+		events := []*pluginv1.WatchSyncEvent{{
+			EventId: "e1",
+			Media: &pluginv1.WatchSyncMedia{
+				MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
+				ExternalIds: map[string]string{"tmdb": "603"},
+			},
+		}}
+		if fault := scrobblePlayback(context.Background(), client, events, newResultSet(events), "PlaybackProgress", paused); fault != nil {
+			t.Fatalf("scrobblePlayback() fault: %v", fault)
+		}
+		playState, _ := got["Session"].(map[string]any)["PlayState"].(map[string]any)
+		if playState["IsPaused"] != paused {
+			t.Errorf("paused=%t: PlayState = %v, want IsPaused %t", paused, playState, paused)
+		}
+	}
+}
+
+// A server error from the webhook rejects the event with an explanation
+// instead of retrying it: the usual cause, a title Scrob cannot create because
+// it arrived without a name, fails the same way on every retry.
+func TestScrobbleRejectsAServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client, err := newAPIClient(server.URL, "key", server.Client())
+	if err != nil {
+		t.Fatalf("newAPIClient() error: %v", err)
+	}
+	events := []*pluginv1.WatchSyncEvent{{
+		EventId: "e1",
+		Media: &pluginv1.WatchSyncMedia{
+			MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
+			ExternalIds: map[string]string{"tmdb": "603"},
+		},
+	}}
+	results := newResultSet(events)
+	if fault := scrobblePlayback(context.Background(), client, events, results, "PlaybackStart", false); fault != nil {
+		t.Fatalf("scrobblePlayback() fault: %v", fault)
+	}
+	r := results.list()
+	if len(r) != 1 || r[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_REJECTED {
+		t.Fatalf("results = %+v, want one REJECTED", r)
+	}
+	if msg := r[0].GetFault().GetSafeMessage(); !strings.Contains(msg, "HTTP 500") || !strings.Contains(msg, "update Silo") {
+		t.Errorf("message = %q, want the status and what to do", msg)
 	}
 }
