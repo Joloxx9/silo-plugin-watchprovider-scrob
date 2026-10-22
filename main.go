@@ -3,7 +3,7 @@ package main
 import (
 	_ "embed"
 
-	"github.com/Joloxx9/silo-plugin-watchprovider-scrob/provider"
+	"github.com/Silo-Community/silo-plugin-watchprovider-scrob/provider"
 	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtime"
 )
 
