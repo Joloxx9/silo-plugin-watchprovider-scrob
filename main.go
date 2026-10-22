@@ -3,8 +3,8 @@ package main
 import (
 	_ "embed"
 
-	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtime"
 	"github.com/Joloxx9/silo-plugin-watchprovider-scrob/provider"
+	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtime"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
