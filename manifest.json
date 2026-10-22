@@ -1,12 +1,21 @@
 {
   "plugin_id": "silo.watchprovider.scrob",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "checksum": "__CHECKSUM__",
   "silo_api_version": "v1",
   "supported_platforms": [
-    { "os": "darwin", "arch": "arm64" },
-    { "os": "linux", "arch": "amd64" },
-    { "os": "linux", "arch": "arm64" }
+    {
+      "os": "darwin",
+      "arch": "arm64"
+    },
+    {
+      "os": "linux",
+      "arch": "amd64"
+    },
+    {
+      "os": "linux",
+      "arch": "arm64"
+    }
   ],
   "capabilities": [
     {
@@ -36,7 +45,9 @@
         }
       ],
       "watch_sync_provider": {
-        "auth_methods": ["WATCH_SYNC_AUTH_METHOD_API_KEY"],
+        "auth_methods": [
+          "WATCH_SYNC_AUTH_METHOD_API_KEY"
+        ],
         "export_watched": true,
         "export_unwatched": true,
         "import_watched": true,
@@ -49,7 +60,11 @@
           "WATCH_SYNC_MEDIA_TYPE_EPISODE",
           "WATCH_SYNC_MEDIA_TYPE_SERIES"
         ],
-        "external_id_namespaces": ["tmdb", "imdb", "tvdb"],
+        "external_id_namespaces": [
+          "tmdb",
+          "imdb",
+          "tvdb"
+        ],
         "max_batch_size": 50
       }
     }
