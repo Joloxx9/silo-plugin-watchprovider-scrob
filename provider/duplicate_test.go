@@ -217,10 +217,31 @@ func TestMarkUnwatchedWithoutATimeIsRejected(t *testing.T) {
 	}
 }
 
-// A play from before the profile connected is history Silo already had, often
-// imported from a media server with its own timestamp. Exporting it would
-// duplicate the viewing in Scrob and every service connected to it.
-func TestMarkWatchedSkipsAPlayFromBeforeTheConnection(t *testing.T) {
+// A play from before the profile connected, often imported from a media
+// server with its own timestamp, is not exported when Scrob already has the
+// title watched at any time: that is almost surely the same viewing.
+func TestMarkWatchedSkipsAnOlderPlayOfATitleScrobHas(t *testing.T) {
+	connected := time.Now().UTC().Truncate(time.Second)
+	held := scrobTime(connected.Add(-400 * 24 * time.Hour))
+	client, posted, done := watchedExportServer(t, []scrobItemEvent{{ID: 1, WatchedAt: &held}})
+	defer done()
+
+	events := []*pluginv1.WatchSyncEvent{movieWatch(connected.Add(-24 * time.Hour))}
+	results := newResultSet(events)
+	if fault := markWatched(context.Background(), client, events, results, connected); fault != nil {
+		t.Fatalf("markWatched() fault: %v", fault)
+	}
+	if len(*posted) != 0 {
+		t.Errorf("posted %v, want no write for a title Scrob has watched", *posted)
+	}
+	if got := results.list(); got[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE {
+		t.Errorf("status = %v, want NO_CHANGE", got[0].GetStatus())
+	}
+}
+
+// An older play of a title Scrob has never seen watched is still exported, so
+// the history Silo had before connecting reaches Scrob.
+func TestMarkWatchedExportsAnOlderPlayOfATitleScrobLacks(t *testing.T) {
 	connected := time.Now().UTC().Truncate(time.Second)
 	client, posted, done := watchedExportServer(t, nil)
 	defer done()
@@ -230,11 +251,30 @@ func TestMarkWatchedSkipsAPlayFromBeforeTheConnection(t *testing.T) {
 	if fault := markWatched(context.Background(), client, events, results, connected); fault != nil {
 		t.Fatalf("markWatched() fault: %v", fault)
 	}
-	if len(*posted) != 0 {
-		t.Errorf("posted %v, want no write for a play from before the connection", *posted)
+	if len(*posted) != 1 {
+		t.Errorf("posted %v, want the play exported", *posted)
 	}
-	if got := results.list(); len(got) != 1 ||
-		got[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE {
-		t.Errorf("results = %+v, want one NO_CHANGE", got)
+}
+
+// Without the lookup an older play could duplicate a viewing, so it is
+// retried rather than exported blind.
+func TestMarkWatchedRetriesAnOlderPlayWhenTheLookupFails(t *testing.T) {
+	connected := time.Now().UTC().Truncate(time.Second)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			t.Errorf("unexpected export")
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	client, _ := newAPIClient(server.URL, "key", server.Client())
+
+	events := []*pluginv1.WatchSyncEvent{movieWatch(connected.Add(-24 * time.Hour))}
+	results := newResultSet(events)
+	if fault := markWatched(context.Background(), client, events, results, connected); fault != nil {
+		t.Fatalf("markWatched() fault: %v", fault)
+	}
+	if got := results.list(); got[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_RETRY {
+		t.Errorf("status = %v, want RETRY", got[0].GetStatus())
 	}
 }

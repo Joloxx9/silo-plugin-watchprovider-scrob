@@ -225,11 +225,15 @@ func TestGetAccountReportsAnInvalidKey(t *testing.T) {
 }
 
 // A connection made before the plugin kept an export cutoff gets one on its
-// next ApplyEvents, returned for the host to persist, and plays from before it
-// are not exported.
+// next ApplyEvents, returned for the host to persist, and a play from before
+// it of a title Scrob has watched is not exported.
 func TestApplyEventsStartsTheExportCutoffForAnOlderConnection(t *testing.T) {
 	s, url, done := rpcServer(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected request to %s", r.URL.Path)
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		// Scrob already has the title watched, so the older play is skipped.
+		_, _ = w.Write([]byte(`{"watched":true,"events":[{"id":1,"watched_at":"2025-01-01T00:00:00"}]}`))
 	})
 	defer done()
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)

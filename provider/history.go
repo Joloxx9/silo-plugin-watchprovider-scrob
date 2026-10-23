@@ -226,9 +226,13 @@ const recentWatchWindow = 10 * time.Minute
 // That history is not only Silo's own playback: it also holds every play Silo
 // imported from elsewhere, such as a media server's history, usually stamped
 // with a different time than Scrob has for the same viewing. Scrob would take
-// each as a new play and push it to every service connected to it. A play from
-// before exportSince, set when the profile connected, is history Silo already
-// had, so it is skipped. A later play Scrob already holds is skipped too.
+// each as a new play and push it to every service connected to it.
+//
+// So a play from before exportSince, set when the profile connected, is
+// exported only when Scrob has no play of the title at all: the title still
+// ends up watched in Scrob, but a viewing Scrob already holds under another
+// time is not counted twice. A later play is skipped only when Scrob holds a
+// play within recentWatchWindow of it, so a rewatch still exports.
 func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet, exportSince time.Time) *pluginv1.WatchSyncFault {
 	for _, event := range events {
 		bodies := watchEventBodies(event)
@@ -236,14 +240,17 @@ func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.Watc
 			results.reject(event, unsupportedPlayMessage)
 			continue
 		}
-		if occurred := event.GetOccurredAt(); occurred != nil && occurred.CheckValid() == nil &&
-			occurred.AsTime().Before(exportSince) {
-			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
-			continue
-		}
-		held, fault := scrobAlreadyHasPlay(ctx, client, event)
+		occurred := event.GetOccurredAt()
+		older := occurred != nil && occurred.CheckValid() == nil && occurred.AsTime().Before(exportSince)
+		held, fault := scrobAlreadyHasPlay(ctx, client, event, older)
 		if fault != nil && connectionWide(fault) {
 			return fault
+		}
+		if fault != nil && older {
+			// Without the lookup an older play could duplicate a viewing
+			// Scrob holds, so it waits for a retry instead.
+			results.fail(event, fault)
+			continue
 		}
 		if held {
 			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
@@ -367,9 +374,10 @@ func writePlay(ctx context.Context, client *apiClient, bodies []scrobWatchEventC
 // holds from another source may be far down the log, and missing it would
 // export a duplicate.
 //
-// A failed lookup loses the check rather than the export: refusing to export
-// at all would be worse than risking a duplicate.
-func scrobAlreadyHasPlay(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent) (bool, *pluginv1.WatchSyncFault) {
+// With anyPlay, any play of the title counts; otherwise only one within
+// recentWatchWindow of this play does. The caller decides what a failed
+// lookup means.
+func scrobAlreadyHasPlay(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent, anyPlay bool) (bool, *pluginv1.WatchSyncFault) {
 	occurred := event.GetOccurredAt()
 	if occurred == nil || occurred.CheckValid() != nil || occurred.AsTime().IsZero() {
 		return false, nil
@@ -381,6 +389,9 @@ func scrobAlreadyHasPlay(ctx context.Context, client *apiClient, event *pluginv1
 	var payload scrobItemEventsResponse
 	if fault := client.get(ctx, "/history/item-events", query, &payload); fault != nil {
 		return false, fault
+	}
+	if anyPlay {
+		return len(payload.Events) > 0, nil
 	}
 	want := occurred.AsTime()
 	for _, held := range payload.Events {
