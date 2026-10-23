@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // authContext is a connection the way the host presents one: the API key in
@@ -16,7 +18,7 @@ import (
 func authContext(baseURL string) *pluginv1.WatchSyncAuthenticatedContext {
 	return &pluginv1.WatchSyncAuthenticatedContext{
 		CapabilityId: capabilityID,
-		Credentials:  credentials("key", baseURL),
+		Credentials:  credentials("key", baseURL, time.Unix(0, 0)),
 	}
 }
 
@@ -98,7 +100,7 @@ func TestListRemoteStateRejectsAMissingAPIKey(t *testing.T) {
 	resp, err := s.ListRemoteState(context.Background(), &pluginv1.WatchSyncListRemoteStateRequest{
 		Context: &pluginv1.WatchSyncAuthenticatedContext{
 			CapabilityId: capabilityID,
-			Credentials:  credentials("", url),
+			Credentials:  credentials("", url, time.Unix(0, 0)),
 		},
 		StateKinds: []pluginv1.WatchSyncRemoteStateKind{pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_RATING},
 	})
@@ -217,5 +219,44 @@ func TestGetAccountReportsAnInvalidKey(t *testing.T) {
 	}
 	if resp.GetFault() == nil {
 		t.Fatalf("want a fault for an invalid key")
+	}
+}
+
+// A connection made before the plugin kept an export cutoff gets one on its
+// next ApplyEvents, returned for the host to persist, and plays from before it
+// are not exported.
+func TestApplyEventsStartsTheExportCutoffForAnOlderConnection(t *testing.T) {
+	s, url, done := rpcServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request to %s", r.URL.Path)
+	})
+	defer done()
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+
+	auth := authContext(url)
+	delete(auth.Credentials.SecretAttributes, exportSinceAttribute)
+	resp, err := s.ApplyEvents(context.Background(), &pluginv1.WatchSyncApplyEventsRequest{
+		Context: auth,
+		Events: []*pluginv1.WatchSyncEvent{{
+			EventId:    "old",
+			Operation:  pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_WATCHED,
+			OccurredAt: timestamppb.New(now.Add(-time.Hour)),
+			Media: &pluginv1.WatchSyncMedia{
+				MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
+				ExternalIds: map[string]string{"tmdb": "42"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyEvents() error: %v", err)
+	}
+	if got := resp.GetUpdatedCredentials().GetSecretAttributes()[exportSinceAttribute]; got != "2026-10-23T12:00:00Z" {
+		t.Errorf("export cutoff = %q, want the time of this call", got)
+	}
+	if got := resp.GetUpdatedCredentials().GetSecretAttributes()[configBaseURL]; got != url {
+		t.Errorf("server URL = %q, want it kept", got)
+	}
+	if r := resp.GetResults(); len(r) != 1 || r[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE {
+		t.Errorf("results = %+v, want one NO_CHANGE", r)
 	}
 }

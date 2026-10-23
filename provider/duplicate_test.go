@@ -59,7 +59,7 @@ func TestMarkWatchedSkipsAPlayScrobAlreadyRecorded(t *testing.T) {
 
 	events := []*pluginv1.WatchSyncEvent{movieWatch(at)}
 	results := newResultSet(events)
-	if fault := markWatched(context.Background(), client, events, results); fault != nil {
+	if fault := markWatched(context.Background(), client, events, results, time.Time{}); fault != nil {
 		t.Fatalf("markWatched() fault: %v", fault)
 	}
 	if len(*posted) != 0 {
@@ -81,7 +81,7 @@ func TestMarkWatchedExportsARewatchHoursLater(t *testing.T) {
 
 	events := []*pluginv1.WatchSyncEvent{movieWatch(at)}
 	results := newResultSet(events)
-	if fault := markWatched(context.Background(), client, events, results); fault != nil {
+	if fault := markWatched(context.Background(), client, events, results, time.Time{}); fault != nil {
 		t.Fatalf("markWatched() fault: %v", fault)
 	}
 	if len(*posted) != 1 {
@@ -113,7 +113,7 @@ func TestMarkWatchedStillExportsWhenTheHistoryReadFails(t *testing.T) {
 	}
 	events := []*pluginv1.WatchSyncEvent{movieWatch(time.Now().UTC())}
 	results := newResultSet(events)
-	if fault := markWatched(context.Background(), client, events, results); fault != nil {
+	if fault := markWatched(context.Background(), client, events, results, time.Time{}); fault != nil {
 		t.Fatalf("markWatched() fault: %v", fault)
 	}
 	if len(posted) != 1 {
@@ -185,5 +185,27 @@ func TestMarkUnwatchedWithoutATimeRemovesTheItem(t *testing.T) {
 	}
 	if want := "/api/proxy/history/item"; deleted != want {
 		t.Errorf("deleted path %q, want %q", deleted, want)
+	}
+}
+
+// A play from before the profile connected is history Silo already had, often
+// imported from a media server with its own timestamp. Exporting it would
+// duplicate the viewing in Scrob and every service connected to it.
+func TestMarkWatchedSkipsAPlayFromBeforeTheConnection(t *testing.T) {
+	connected := time.Now().UTC().Truncate(time.Second)
+	client, posted, done := watchedExportServer(t, nil)
+	defer done()
+
+	events := []*pluginv1.WatchSyncEvent{movieWatch(connected.Add(-24 * time.Hour))}
+	results := newResultSet(events)
+	if fault := markWatched(context.Background(), client, events, results, connected); fault != nil {
+		t.Fatalf("markWatched() fault: %v", fault)
+	}
+	if len(*posted) != 0 {
+		t.Errorf("posted %v, want no write for a play from before the connection", *posted)
+	}
+	if got := results.list(); len(got) != 1 ||
+		got[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE {
+		t.Errorf("results = %+v, want one NO_CHANGE", got)
 	}
 }

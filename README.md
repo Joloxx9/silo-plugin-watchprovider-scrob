@@ -6,7 +6,7 @@ Connects Silo profiles to a self-hosted [Scrob](https://github.com/ellite/scrob)
 
 - Validates each profile's Scrob API key without persisting it in the plugin.
 - Imports movie and episode watch history.
-- Exports completed movie and episode watches, and unwatches, skipping a play Scrob already recorded.
+- Exports completed movie and episode watches, and unwatches, skipping a play Scrob already recorded. Plays from before the profile connected are not exported: they are history Silo already had, often with different timestamps than Scrob's copy. A connection made with an older plugin version starts this cutoff at its first sync after the update.
 - Imports and exports movie and series ratings.
 - Imports resume positions from Scrob's continue-watching list.
 - Reports live playback, including pauses, to Scrob's Now Playing, which

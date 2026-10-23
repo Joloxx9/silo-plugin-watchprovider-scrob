@@ -141,11 +141,24 @@ const unsupportedPlayMessage = "Scrob watched sync requires a movie or episode w
 // never match to the second.
 const recentWatchWindow = 10 * time.Minute
 
-func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
+// markWatched exports the plays Silo's history reconciliation sends.
+//
+// That history is not only Silo's own playback: it also holds every play Silo
+// imported from elsewhere, such as a media server's history, usually stamped
+// with a different time than Scrob has for the same viewing. Scrob would take
+// each as a new play and push it to every service connected to it. A play from
+// before exportSince, set when the profile connected, is history Silo already
+// had, so it is skipped. A later play Scrob already holds is skipped too.
+func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet, exportSince time.Time) *pluginv1.WatchSyncFault {
 	for _, event := range events {
 		body, ok := watchEventBody(event)
 		if !ok {
 			results.reject(event, unsupportedPlayMessage)
+			continue
+		}
+		if occurred := event.GetOccurredAt(); occurred != nil && occurred.CheckValid() == nil &&
+			occurred.AsTime().Before(exportSince) {
+			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
 			continue
 		}
 		held, fault := scrobAlreadyHasPlay(ctx, client, event)

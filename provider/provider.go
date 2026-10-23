@@ -19,6 +19,9 @@ import (
 const (
 	capabilityID  = "scrob"
 	configBaseURL = "scrob_server.server_url"
+	// exportSinceAttribute holds the connection's export cutoff (see
+	// markWatched), kept with the credentials the host persists.
+	exportSinceAttribute = "scrob.export_since"
 
 	// ApplyEvents and a ListRemoteState page stop starting new work after
 	// this long, or sooner when the call's deadline, less
@@ -48,7 +51,7 @@ func (s *Server) ExchangeAPIKey(ctx context.Context, req *pluginv1.WatchSyncExch
 		return &pluginv1.WatchSyncCredentialResponse{Fault: fault}, nil
 	}
 	return &pluginv1.WatchSyncCredentialResponse{
-		Credentials: credentials(req.GetApiKey(), client.baseURL.String()),
+		Credentials: credentials(req.GetApiKey(), client.baseURL.String(), s.clock()),
 		Account:     account,
 	}, nil
 }
@@ -121,6 +124,18 @@ func (s *Server) ApplyEvents(ctx context.Context, req *pluginv1.WatchSyncApplyEv
 	response := &pluginv1.WatchSyncApplyEventsResponse{
 		Results: make([]*pluginv1.WatchSyncApplyResult, 0, len(events)),
 	}
+	// A connection made before the cutoff existed starts it now; the host
+	// keeps it from then on.
+	exportSince, known := exportCutoff(req.GetContext().GetCredentials())
+	if !known {
+		exportSince = s.clock().UTC().Truncate(time.Second)
+		updated := cloneCredentials(req.GetContext().GetCredentials())
+		if updated.SecretAttributes == nil {
+			updated.SecretAttributes = map[string]string{}
+		}
+		updated.SecretAttributes[exportSinceAttribute] = exportSince.Format(time.RFC3339)
+		response.UpdatedCredentials = updated
+	}
 	for start := 0; start < len(events); {
 		end := start + 1
 		for end < len(events) && events[end].GetOperation() == events[start].GetOperation() {
@@ -133,16 +148,16 @@ func (s *Server) ApplyEvents(ctx context.Context, req *pluginv1.WatchSyncApplyEv
 			continue
 		}
 		results := newResultSet(group)
-		connectionFault := applyGroup(ctx, client, group, results)
+		connectionFault := applyGroup(ctx, client, group, results, exportSince)
 		if connectionFault != nil {
-			return &pluginv1.WatchSyncApplyEventsResponse{Fault: connectionFault}, nil
+			return &pluginv1.WatchSyncApplyEventsResponse{UpdatedCredentials: response.UpdatedCredentials, Fault: connectionFault}, nil
 		}
 		response.Results = append(response.Results, results.list()...)
 	}
 	return response, nil
 }
 
-func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
+func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet, exportSince time.Time) *pluginv1.WatchSyncFault {
 	pending := make([]*pluginv1.WatchSyncEvent, 0, len(events))
 	for _, event := range events {
 		if strings.TrimSpace(event.GetEventId()) == "" {
@@ -156,7 +171,7 @@ func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.Watch
 	}
 	switch pending[0].GetOperation() {
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_WATCHED:
-		return markWatched(ctx, client, pending, results)
+		return markWatched(ctx, client, pending, results, exportSince)
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_UNWATCHED:
 		return markUnwatched(ctx, client, pending, results)
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SET_RATING:
@@ -239,11 +254,28 @@ func (s *Server) client(requestedCapability string, config *pluginv1.WatchSyncPr
 	return client, nil
 }
 
-func credentials(apiKey, baseURL string) *pluginv1.WatchSyncCredentials {
+func credentials(apiKey, baseURL string, connectedAt time.Time) *pluginv1.WatchSyncCredentials {
 	return &pluginv1.WatchSyncCredentials{
-		AccessToken:      strings.TrimSpace(apiKey),
-		SecretAttributes: map[string]string{configBaseURL: strings.TrimSpace(baseURL)},
+		AccessToken: strings.TrimSpace(apiKey),
+		SecretAttributes: map[string]string{
+			configBaseURL:        strings.TrimSpace(baseURL),
+			exportSinceAttribute: connectedAt.UTC().Truncate(time.Second).Format(time.RFC3339),
+		},
 	}
+}
+
+// exportCutoff reads the connection's export cutoff. known is false for a
+// connection made before the plugin kept one.
+func exportCutoff(credentials *pluginv1.WatchSyncCredentials) (time.Time, bool) {
+	value := strings.TrimSpace(credentials.GetSecretAttributes()[exportSinceAttribute])
+	if value == "" {
+		return time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return at, true
 }
 
 func cloneCredentials(value *pluginv1.WatchSyncCredentials) *pluginv1.WatchSyncCredentials {
