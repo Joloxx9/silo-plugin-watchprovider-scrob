@@ -74,9 +74,9 @@
     "description_markdown": "Imports movie and episode watch history and resume points, exports completed watches and unwatches, syncs movie and series ratings in both directions, syncs dropped shows, keeps Silo's watchlist in a Scrob list named \"Silo - Watchlist\", and reports live playback to Scrob's Now Playing. Built against stock upstream Silo (plugin SDK v0.24.0).",
     "setup_markdown": "Connect a Silo profile by entering that profile's Scrob server URL and API key (from Scrob's account settings). Different profiles can use different Scrob servers.",
     "homepage_url": "https://github.com/ellite/scrob",
-    "source_url": "https://github.com/Joloxx9/silo-plugin-watchprovider-scrob-local",
-    "support_url": "https://github.com/Joloxx9/silo-plugin-watchprovider-scrob-local/issues",
-    "changelog_url": "https://github.com/Joloxx9/silo-plugin-watchprovider-scrob-local/releases",
+    "source_url": "https://github.com/Silo-Community/silo-plugin-watchprovider-scrob",
+    "support_url": "https://github.com/Silo-Community/silo-plugin-watchprovider-scrob/issues",
+    "changelog_url": "https://github.com/Silo-Community/silo-plugin-watchprovider-scrob/releases",
     "publisher_name": "Joloxx9",
     "publisher_url": "https://github.com/Joloxx9",
     "license_spdx": "AGPL-3.0-only"
