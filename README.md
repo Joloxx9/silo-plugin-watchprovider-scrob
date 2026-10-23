@@ -58,7 +58,7 @@ A season rating is stored against the same series row as a whole-series rating i
 
 ## Watched history
 
-`GET /history` pages individual watch events rather than a per-title summary. The plugin reads every page of one connection's history inside a single `ListRemoteState` call and aggregates it into one state per title (play count and the most recent watch time) before returning anything, since a per-event read spread across pages cannot otherwise be reconciled into the host's per-title state. A very large history can exceed the sync time budget; the sync retries on the next scheduled run when it does.
+`GET /history` pages individual watch events, newest first, with no "changed since" filter. The plugin returns one Scrob page per `ListRemoteState` call and lets the host page through, so a history of any size imports without running into a call's time limit. The first import, and one import a day after that, reads the whole history. In between, an import stops 48 hours before the newest play the last one saw, which still catches plays added to Scrob with slightly older dates. Silo keeps the newest play per title and skips plays it already has, so a title seen on several pages, or again in the overlap, adds nothing.
 
 ## Network access and external services
 
