@@ -231,8 +231,8 @@ const recentWatchWindow = 10 * time.Minute
 // had, so it is skipped. A later play Scrob already holds is skipped too.
 func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet, exportSince time.Time) *pluginv1.WatchSyncFault {
 	for _, event := range events {
-		body, ok := watchEventBody(event)
-		if !ok {
+		bodies := watchEventBodies(event)
+		if len(bodies) == 0 {
 			results.reject(event, unsupportedPlayMessage)
 			continue
 		}
@@ -249,14 +249,15 @@ func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.Watc
 			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
 			continue
 		}
-		if fault := client.post(ctx, "/history", body, nil); fault != nil {
+		status, fault := writePlay(ctx, client, bodies)
+		if fault != nil {
 			if connectionWide(fault) {
 				return fault
 			}
 			results.fail(event, fault)
 			continue
 		}
-		results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED)
+		results.set(event, status)
 	}
 	return nil
 }
@@ -297,35 +298,66 @@ func markUnwatched(ctx context.Context, client *apiClient, events []*pluginv1.Wa
 	return nil
 }
 
-func watchEventBody(event *pluginv1.WatchSyncEvent) (scrobWatchEventCreate, bool) {
+// watchEventBodies are the POST /history bodies to try for one play, in order.
+//
+// An episode is tried by its own ids first. Given a show and numbers, Scrob
+// picks the episode by those numbers in its own (normally TMDB) episode order
+// and never looks at the episode's id, so a show Silo numbers differently,
+// such as by TVDB's order, would record the wrong episode. The show and
+// numbers follow when Scrob does not know the episode by its id: that path can
+// create an episode Scrob has not seen.
+func watchEventBodies(event *pluginv1.WatchSyncEvent) []scrobWatchEventCreate {
 	media := event.GetMedia()
-	ids := idsFromExternal(media.GetExternalIds())
 	kind := mediaType(media.GetMediaType())
 	if kind != "movie" && kind != "episode" {
-		return scrobWatchEventCreate{}, false
+		return nil
 	}
-	if ids.empty() {
-		return scrobWatchEventCreate{}, false
-	}
-	body := scrobWatchEventCreate{TMDBID: ids.TMDB, TVDBID: ids.TVDB, MediaType: kind, Completed: true, Source: scrobbleSource}
+	base := scrobWatchEventCreate{MediaType: kind, Completed: true, Source: scrobbleSource}
 	if occurred := event.GetOccurredAt(); occurred != nil && occurred.CheckValid() == nil && !occurred.AsTime().IsZero() {
-		body.WatchedAt = occurred.AsTime().UTC().Format(time.RFC3339)
+		base.WatchedAt = occurred.AsTime().UTC().Format(time.RFC3339)
 	}
-	if kind == "episode" {
-		// Scrob finds an episode by its show and numbers when it has them,
-		// which also creates an episode it has not seen; without series ids it
-		// looks the episode up by its own id.
-		seriesIDs := idsFromExternal(media.GetSeriesExternalIds())
-		if seriesIDs.TMDB <= 0 && seriesIDs.TVDB <= 0 {
-			return body, true
+	var bodies []scrobWatchEventCreate
+	ids := idsFromExternal(media.GetExternalIds())
+	if ids.TMDB > 0 || ids.TVDB > 0 {
+		own := base
+		own.TMDBID, own.TVDBID = ids.TMDB, ids.TVDB
+		bodies = append(bodies, own)
+	}
+	if kind == "episode" && media.GetSeasonNumber() >= 0 && media.GetEpisodeNumber() > 0 {
+		series := idsFromExternal(media.GetSeriesExternalIds())
+		if series.TMDB > 0 || series.TVDB > 0 {
+			numbered := base
+			season, episode := int(media.GetSeasonNumber()), int(media.GetEpisodeNumber())
+			numbered.SeriesTMDBID, numbered.SeriesTVDBID = series.TMDB, series.TVDB
+			numbered.SeasonNumber, numbered.EpisodeNumber = &season, &episode
+			bodies = append(bodies, numbered)
 		}
-		body.SeriesTMDBID = seriesIDs.TMDB
-		body.SeriesTVDBID = seriesIDs.TVDB
-		season, episode := int(media.GetSeasonNumber()), int(media.GetEpisodeNumber())
-		body.SeasonNumber = &season
-		body.EpisodeNumber = &episode
 	}
-	return body, true
+	return bodies
+}
+
+// writePlay records one completed play with the first of bodies Scrob can
+// place. A 409 is Scrob already holding a play within its duplicate window.
+func writePlay(ctx context.Context, client *apiClient, bodies []scrobWatchEventCreate) (pluginv1.WatchSyncApplyStatus, *pluginv1.WatchSyncFault) {
+	var last *pluginv1.WatchSyncFault
+	for _, body := range bodies {
+		code, fault := client.postStatus(ctx, "/history", body, nil)
+		switch {
+		case fault == nil:
+			return pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED, nil
+		case code == http.StatusConflict:
+			return pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE, nil
+		case code == http.StatusNotFound:
+			last = fault
+			continue
+		default:
+			return 0, fault
+		}
+	}
+	if last == nil {
+		last = invalidRequestFault(unsupportedPlayMessage)
+	}
+	return 0, last
 }
 
 // scrobAlreadyHasPlay reports whether Scrob already holds this play.

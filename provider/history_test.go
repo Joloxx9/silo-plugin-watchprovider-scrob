@@ -219,26 +219,56 @@ func TestMarkUnwatchedTreatsNotFoundAsNoChange(t *testing.T) {
 	}
 }
 
-// An episode with its own id but no series id is still exported, looked up
-// by that id; with series ids it carries the show and numbers too.
-func TestWatchEventBodyForAnEpisode(t *testing.T) {
+// An episode is tried by its own id first, then by its show and numbers.
+func TestWatchEventBodiesTryTheEpisodesOwnIDFirst(t *testing.T) {
 	event := &pluginv1.WatchSyncEvent{
 		Media: &pluginv1.WatchSyncMedia{
-			MediaType:     pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE,
-			ExternalIds:   map[string]string{"tmdb": "42"},
-			SeasonNumber:  1,
-			EpisodeNumber: 2,
+			MediaType:         pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE,
+			ExternalIds:       map[string]string{"tmdb": "42"},
+			SeriesExternalIds: map[string]string{"tmdb": "7"},
+			SeasonNumber:      1,
+			EpisodeNumber:     2,
 		},
 	}
-	if body, ok := watchEventBody(event); !ok || body.TMDBID != 42 || body.SeasonNumber != nil {
-		t.Fatalf("watchEventBody() = %+v, %v; want the episode's own id only", body, ok)
+	bodies := watchEventBodies(event)
+	if len(bodies) != 2 {
+		t.Fatalf("bodies = %+v, want two", bodies)
 	}
-	event.Media.SeriesExternalIds = map[string]string{"tmdb": "7"}
-	body, ok := watchEventBody(event)
-	if !ok {
-		t.Fatalf("watchEventBody() ok = false, want true")
+	if bodies[0].TMDBID != 42 || bodies[0].SeriesTMDBID != 0 || bodies[0].SeasonNumber != nil {
+		t.Errorf("first body = %+v, want the episode's own id only", bodies[0])
 	}
-	if body.SeriesTMDBID != 7 || body.SeasonNumber == nil || *body.SeasonNumber != 1 || body.EpisodeNumber == nil || *body.EpisodeNumber != 2 {
-		t.Fatalf("unexpected body: %+v", body)
+	if b := bodies[1]; b.TMDBID != 0 || b.SeriesTMDBID != 7 || *b.SeasonNumber != 1 || *b.EpisodeNumber != 2 {
+		t.Errorf("second body = %+v, want the show and numbers only", b)
+	}
+	event.Media.SeriesExternalIds = nil
+	if bodies := watchEventBodies(event); len(bodies) != 1 {
+		t.Errorf("without series ids, bodies = %+v, want the own-id body only", bodies)
+	}
+}
+
+// When Scrob does not know the episode by its id, the show and numbers are
+// tried, which lets Scrob create it.
+func TestWritePlayFallsBackToTheShowAndNumbers(t *testing.T) {
+	var seen []scrobWatchEventCreate
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body scrobWatchEventCreate
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		seen = append(seen, body)
+		if body.SeasonNumber == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	client, _ := newAPIClient(server.URL, "key", server.Client())
+	season, episode := 1, 2
+	status, fault := writePlay(context.Background(), client, []scrobWatchEventCreate{
+		{MediaType: "episode", TMDBID: 42},
+		{MediaType: "episode", SeriesTMDBID: 7, SeasonNumber: &season, EpisodeNumber: &episode},
+	})
+	if fault != nil || status != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED || len(seen) != 2 {
+		t.Errorf("writePlay() = %v, %v after %d tries; want APPLIED on the second", status, fault, len(seen))
 	}
 }

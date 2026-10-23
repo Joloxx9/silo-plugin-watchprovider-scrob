@@ -217,17 +217,15 @@ func finishedPlayback(event *pluginv1.WatchSyncEvent) bool {
 func recordFinishedPlayback(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
 	status := pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE
 	if event.GetCompleted() {
-		body, ok := watchEventBody(event)
-		if !ok {
+		bodies := watchEventBodies(event)
+		if len(bodies) == 0 {
 			results.reject(event, unsupportedPlayMessage)
 			return dismissSessionQuietly(ctx, client, event)
 		}
-		code, fault := client.postStatus(ctx, "/history", body, nil)
+		written, fault := writePlay(ctx, client, bodies)
 		switch {
 		case fault == nil:
-			status = pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED
-		case code == http.StatusConflict:
-			// Scrob already holds a play within its duplicate window.
+			status = written
 		case connectionWide(fault):
 			return fault
 		default:
