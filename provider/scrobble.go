@@ -144,7 +144,8 @@ func playerWebhookBody(event *pluginv1.WatchSyncEvent, operation pluginv1.WatchS
 		if unique.TMDB <= 0 {
 			unique.TMDB = series.TMDB
 		}
-		if unique.empty() || media.GetSeasonNumber() <= 0 || media.GetEpisodeNumber() <= 0 {
+		// Season 0 holds a show's specials, which Scrob tracks like any season.
+		if unique.empty() || media.GetSeasonNumber() < 0 || media.GetEpisodeNumber() <= 0 {
 			return playerWebhook{}, false
 		}
 		season, episode := int(media.GetSeasonNumber()), int(media.GetEpisodeNumber())

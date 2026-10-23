@@ -298,3 +298,18 @@ func TestScrobbleStopSendsAnUnfinishedStopToTheWebhook(t *testing.T) {
 		t.Errorf("calls = %v, want %v", *calls, want)
 	}
 }
+
+// Specials sit in season 0, which Scrob matches like any other season.
+func TestScrobbleReportsASpecial(t *testing.T) {
+	client, got, done := playerServer(t, "ok")
+	defer done()
+
+	event := episodeEvent()
+	event.Media.SeasonNumber = 0
+	if r := scrobbleOne(t, client, event, scrobbleStart); r.GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED {
+		t.Fatalf("status = %v, want APPLIED", r.GetStatus())
+	}
+	if got.body.Item.Season == nil || *got.body.Item.Season != 0 {
+		t.Errorf("season = %v, want 0 sent explicitly", got.body.Item.Season)
+	}
+}
