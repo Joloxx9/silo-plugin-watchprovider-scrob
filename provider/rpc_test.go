@@ -75,7 +75,6 @@ func TestListRemoteStateRefusesUnsupportedFamilies(t *testing.T) {
 
 	for _, kind := range []pluginv1.WatchSyncRemoteStateKind{
 		pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_FAVORITE,
-		pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_WATCHLIST,
 	} {
 		resp, err := s.ListRemoteState(context.Background(), &pluginv1.WatchSyncListRemoteStateRequest{
 			Context:    authContext(url),

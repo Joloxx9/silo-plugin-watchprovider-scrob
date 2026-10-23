@@ -13,7 +13,13 @@ Connects Silo profiles to a self-hosted [Scrob](https://github.com/ellite/scrob)
 - Reports live playback, including pauses, to Scrob's Now Playing, which
   forwards it to the services connected to Scrob.
 
-The plugin deliberately does not advertise favorites or watchlist sync. Scrob models a watchlist as arbitrary named lists rather than Silo's single list, which needs its own connection-config design.
+## Watchlist
+
+Scrob has no single watchlist, only named lists. It mirrors another service's watchlist as a list of its own, such as "MDBList - Watchlist", and the plugin does the same: Silo's watchlist lives in a Scrob list named **Silo - Watchlist**, which the first export creates. The plugin never touches your other lists, including ones that mirror other services, so a title can sit on several of them.
+
+Silo's own connection switches control it: import watchlist, export watchlist, and watchlist removals. Silo turns import and export on when a profile connects and leaves removals off, so nothing leaves either watchlist until you enable removals. The list holds movies and whole series. Seasons, episodes and people you put on it in Scrob are not imported.
+
+The plugin does not sync favorites. Scrob has no favorites list.
 
 ## Live playback
 
