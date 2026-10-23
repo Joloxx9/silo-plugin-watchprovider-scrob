@@ -17,15 +17,17 @@ The plugin deliberately does not advertise favorites or watchlist sync. Scrob mo
 ## Live playback
 
 Scrob has no provider-neutral endpoint for reporting playback. Live playback
-reaches it only through a media-server webhook, so the plugin posts the
-Jellyfin webhook shape to Scrob's connection-less webhook route, authenticated
-by the connection's own API key. No extra setup is needed in Scrob.
+reaches it through Scrob's generic player webhook (`/webhooks/kodi`), the one its
+Kodi add-on uses, authenticated by the connection's own API key in a header. No
+extra setup is needed in Scrob. Unlike Scrob's Jellyfin webhook, it has no
+media-server connection behind it. It adds nothing to Scrob's collection, and the
+settings of a Jellyfin connection in Scrob don't apply to it. An episode is found
+by its series' TVDB or IMDb id and its numbers, so TVDB-only shows work too.
 
 The webhook and the plugin's own history writes name their source `silo`, so
-Scrob versions that read the field show these plays as Silo in Now Playing and
-history. History writes need Scrob v2.32 or later, and the webhook needs
-ellite/scrob#506. Older versions ignore the field and show the plays as
-Jellyfin or Manual.
+Scrob v2.33 and later show these plays as Silo, with Silo's icon, in Now Playing
+and history. Older versions ignore the field and show the plays as Kodi or
+Manual.
 
 Scrob forwards Now Playing to the services connected to it, such as Trakt or
 Simkl. If you connect one of those to both Silo and Scrob, it receives the play
@@ -61,7 +63,7 @@ A season rating is stored against the same series row as a whole-series rating i
 
 The plugin makes outbound requests only to the Scrob server URL each connection supplies, authenticated with that connection's own API key. It contacts no other host and sends no telemetry. Scrob itself may forward Now Playing to services connected to it (see Live playback above); that forwarding happens inside Scrob, not in the plugin.
 
-The API key travels in a request header, except for live playback reports: Scrob's webhook route accepts the key only as an `api_key` query parameter, so those requests carry it in the URL. Scrob's access log, and the log of any reverse proxy in front of Scrob, can therefore record the key. Restrict who can read those logs.
+The API key always travels in the `X-Api-Key` request header, never in a URL.
 
 ## Setup
 
