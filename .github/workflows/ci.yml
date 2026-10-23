@@ -32,6 +32,20 @@ jobs:
             exit 1
           fi
 
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run vet
+        env:
+          GOWORK: off
+        run: go vet ./...
+
       - name: Run tests
         env:
           GOWORK: off

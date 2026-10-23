@@ -13,7 +13,7 @@
       "type": "watch_sync_provider.v1",
       "id": "scrob",
       "display_name": "Scrob",
-      "description": "Bidirectional watch history, resume progress, movie and series ratings, and dropped shows for a self-hosted Scrob instance.",
+      "description": "Bidirectional watch history, resume progress, movie and series ratings, dropped shows and live playback for a self-hosted Scrob instance.",
       "config_schema": [
         {
           "key": "scrob_server",
@@ -59,7 +59,7 @@
   "presentation": {
     "display_name": "Scrob Watch Provider",
     "summary": "Sync Silo watch activity with a self-hosted Scrob instance.",
-    "description_markdown": "Imports movie and episode watch history and resume points, exports completed watches and unwatches, syncs movie and series ratings in both directions, and syncs dropped shows. Built against stock upstream Silo (plugin SDK v0.24.0).",
+    "description_markdown": "Imports movie and episode watch history and resume points, exports completed watches and unwatches, syncs movie and series ratings in both directions, syncs dropped shows, and reports live playback to Scrob's Now Playing. Built against stock upstream Silo (plugin SDK v0.24.0).",
     "setup_markdown": "Connect a Silo profile by entering that profile's Scrob server URL and API key (from Scrob's account settings). Different profiles can use different Scrob servers.",
     "homepage_url": "https://github.com/ellite/scrob",
     "source_url": "https://github.com/Joloxx9/silo-plugin-watchprovider-scrob-local",

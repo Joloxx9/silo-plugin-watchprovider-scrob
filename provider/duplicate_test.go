@@ -19,6 +19,10 @@ func watchedExportServer(t *testing.T, held []scrobItemEvent) (*apiClient, *[]st
 	posted := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			var body scrobWatchEventCreate
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Source != "silo" {
+				t.Errorf("exported play source = %q (err %v), want silo", body.Source, err)
+			}
 			posted = append(posted, r.URL.Path)
 			_, _ = w.Write([]byte(`{}`))
 			return
@@ -59,7 +63,7 @@ func TestMarkWatchedSkipsAPlayScrobAlreadyRecorded(t *testing.T) {
 
 	events := []*pluginv1.WatchSyncEvent{movieWatch(at)}
 	results := newResultSet(events)
-	if fault := markWatched(context.Background(), client, events, results); fault != nil {
+	if fault := markWatched(context.Background(), client, events, results, time.Time{}); fault != nil {
 		t.Fatalf("markWatched() fault: %v", fault)
 	}
 	if len(*posted) != 0 {
@@ -81,7 +85,7 @@ func TestMarkWatchedExportsARewatchHoursLater(t *testing.T) {
 
 	events := []*pluginv1.WatchSyncEvent{movieWatch(at)}
 	results := newResultSet(events)
-	if fault := markWatched(context.Background(), client, events, results); fault != nil {
+	if fault := markWatched(context.Background(), client, events, results, time.Time{}); fault != nil {
 		t.Fatalf("markWatched() fault: %v", fault)
 	}
 	if len(*posted) != 1 {
@@ -113,7 +117,7 @@ func TestMarkWatchedStillExportsWhenTheHistoryReadFails(t *testing.T) {
 	}
 	events := []*pluginv1.WatchSyncEvent{movieWatch(time.Now().UTC())}
 	results := newResultSet(events)
-	if fault := markWatched(context.Background(), client, events, results); fault != nil {
+	if fault := markWatched(context.Background(), client, events, results, time.Time{}); fault != nil {
 		t.Fatalf("markWatched() fault: %v", fault)
 	}
 	if len(posted) != 1 {
@@ -155,27 +159,51 @@ func TestMarkUnwatchedDeletesOnlyThePlayAtThatTime(t *testing.T) {
 	}
 }
 
-// With no timestamp there is nothing to single out, so the title's history is
-// removed as before rather than the unwatch silently doing nothing.
-func TestMarkUnwatchedWithoutATimeRemovesTheItem(t *testing.T) {
-	var deleted string
+// unwatchServer answers the per-title lookup with held and fails the test on
+// any delete.
+func unwatchServer(t *testing.T, held []scrobItemEvent) (*apiClient, func()) {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
-			deleted = r.URL.Path
-			if r.URL.Query().Get("tmdb_id") != "42" {
-				t.Errorf("item delete without the title's id: %s", r.URL.RawQuery)
-			}
+			t.Errorf("unexpected delete of %s?%s", r.URL.Path, r.URL.RawQuery)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(scrobItemEventsResponse{})
+		_ = json.NewEncoder(w).Encode(scrobItemEventsResponse{Watched: len(held) > 0, Events: held})
 	}))
-	defer server.Close()
-
 	client, err := newAPIClient(server.URL, "key", server.Client())
 	if err != nil {
+		server.Close()
 		t.Fatalf("newAPIClient() error: %v", err)
 	}
+	return client, server.Close
+}
+
+// A Silo play Scrob has no copy of, such as one imported from a media server
+// with a different time, must not remove the title's other Scrob plays.
+func TestMarkUnwatchedWithoutAMatchingPlayDeletesNothing(t *testing.T) {
+	at := time.Now().UTC().Truncate(time.Second)
+	other := scrobTime(at.Add(-72 * time.Hour))
+	client, done := unwatchServer(t, []scrobItemEvent{{ID: 12, WatchedAt: &other}})
+	defer done()
+
+	events := []*pluginv1.WatchSyncEvent{movieWatch(at)}
+	results := newResultSet(events)
+	if fault := markUnwatched(context.Background(), client, events, results); fault != nil {
+		t.Fatalf("markUnwatched() fault: %v", fault)
+	}
+	if got := results.list(); len(got) != 1 ||
+		got[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE {
+		t.Errorf("results = %+v, want one NO_CHANGE", got)
+	}
+}
+
+// With no timestamp there is no single play to name, so the event is rejected
+// rather than guessed at.
+func TestMarkUnwatchedWithoutATimeIsRejected(t *testing.T) {
+	client, done := unwatchServer(t, nil)
+	defer done()
+
 	event := movieWatch(time.Now().UTC())
 	event.OccurredAt = nil
 	events := []*pluginv1.WatchSyncEvent{event}
@@ -183,7 +211,30 @@ func TestMarkUnwatchedWithoutATimeRemovesTheItem(t *testing.T) {
 	if fault := markUnwatched(context.Background(), client, events, results); fault != nil {
 		t.Fatalf("markUnwatched() fault: %v", fault)
 	}
-	if want := "/api/proxy/history/item"; deleted != want {
-		t.Errorf("deleted path %q, want %q", deleted, want)
+	if got := results.list(); len(got) != 1 ||
+		got[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_REJECTED {
+		t.Errorf("results = %+v, want one REJECTED", got)
+	}
+}
+
+// A play from before the profile connected is history Silo already had, often
+// imported from a media server with its own timestamp. Exporting it would
+// duplicate the viewing in Scrob and every service connected to it.
+func TestMarkWatchedSkipsAPlayFromBeforeTheConnection(t *testing.T) {
+	connected := time.Now().UTC().Truncate(time.Second)
+	client, posted, done := watchedExportServer(t, nil)
+	defer done()
+
+	events := []*pluginv1.WatchSyncEvent{movieWatch(connected.Add(-24 * time.Hour))}
+	results := newResultSet(events)
+	if fault := markWatched(context.Background(), client, events, results, connected); fault != nil {
+		t.Fatalf("markWatched() fault: %v", fault)
+	}
+	if len(*posted) != 0 {
+		t.Errorf("posted %v, want no write for a play from before the connection", *posted)
+	}
+	if got := results.list(); len(got) != 1 ||
+		got[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE {
+		t.Errorf("results = %+v, want one NO_CHANGE", got)
 	}
 }

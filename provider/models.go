@@ -81,6 +81,7 @@ type scrobWatchEventCreate struct {
 	SeriesTVDBID  int    `json:"series_tvdb_id,omitempty"`
 	SeasonNumber  *int   `json:"season_number,omitempty"`
 	EpisodeNumber *int   `json:"episode_number,omitempty"`
+	Source        string `json:"source"`
 }
 
 type scrobRatingEntry struct {

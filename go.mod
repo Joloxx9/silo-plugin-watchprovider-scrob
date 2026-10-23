@@ -1,4 +1,4 @@
-module github.com/Silo-Server/silo-plugin-watchprovider-scrob
+module github.com/Silo-Community/silo-plugin-watchprovider-scrob
 
 go 1.26.4
 
