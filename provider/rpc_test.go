@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -291,5 +292,26 @@ func TestApplyEventsRunsTheFirstEventUnderAShortDeadline(t *testing.T) {
 	}
 	if r := resp.GetResults(); len(r) != 1 || r[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED {
 		t.Errorf("results = %+v, want the stop APPLIED", r)
+	}
+}
+
+// A redirect is not followed, so the API key header never reaches another
+// host, and the fault says the URL is wrong.
+func TestRequestsDoNotFollowRedirects(t *testing.T) {
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("redirect followed to %s with key %q", r.URL.Path, r.Header.Get("X-Api-Key"))
+	}))
+	defer elsewhere.Close()
+	s, url, done := rpcServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/login", http.StatusFound)
+	})
+	defer done()
+
+	resp, err := s.GetAccount(context.Background(), &pluginv1.WatchSyncGetAccountRequest{Context: authContext(url)})
+	if err != nil {
+		t.Fatalf("GetAccount() error: %v", err)
+	}
+	if msg := resp.GetFault().GetSafeMessage(); !strings.Contains(msg, "redirected") {
+		t.Errorf("fault = %q, want the redirect explained", msg)
 	}
 }

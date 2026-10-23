@@ -65,7 +65,12 @@ func newAPIClient(rawBaseURL, apiKey string, httpClient *http.Client) (*apiClien
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: defaultRequestTimeout}
 	}
-	return &apiClient{baseURL: baseURL, apiKey: strings.TrimSpace(apiKey), http: httpClient}, nil
+	// A redirect is never followed. Go would resend the X-Api-Key header to
+	// wherever it points, even another host, and a redirect from Scrob means
+	// the URL is wrong anyway: the frontend sends an unrouted path to /login.
+	noRedirects := *httpClient
+	noRedirects.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &apiClient{baseURL: baseURL, apiKey: strings.TrimSpace(apiKey), http: &noRedirects}, nil
 }
 
 func (c *apiClient) endpoint(path string, query url.Values) string {
@@ -124,11 +129,8 @@ func (c *apiClient) request(ctx context.Context, method, path string, query url.
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	// The key travels as a header. The one exception is live playback:
-	// Scrob's webhook route reads the key only from the query string, so
-	// those requests also carry it in the URL (see scrobblePlayback), where
-	// Scrob's access log and any reverse proxy in front of it can record it.
-	// The transport error below never includes the URL.
+	// The key travels only as a header. The transport error below never
+	// includes the URL.
 	req.Header.Set("X-Api-Key", c.apiKey)
 
 	resp, err := c.http.Do(req)
@@ -171,6 +173,9 @@ func faultForHTTPResponse(resp *http.Response) *pluginv1.WatchSyncFault {
 		}
 	case http.StatusRequestTimeout:
 		return temporaryFault("Scrob request timed out")
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return invalidRequestFault("Scrob redirected the request; check that the server URL points at the Scrob web app")
 	case http.StatusBadRequest, http.StatusConflict, http.StatusUnprocessableEntity:
 		return &pluginv1.WatchSyncFault{
 			Code:        pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_INVALID_REQUEST,
