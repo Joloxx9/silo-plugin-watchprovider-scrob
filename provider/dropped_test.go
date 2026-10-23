@@ -173,3 +173,15 @@ func TestWriteDroppedRejectsUntrackedSeries(t *testing.T) {
 		t.Fatalf("Status = %v, want REJECTED", result.GetStatus())
 	}
 }
+
+// Scrob being briefly unavailable during the show lookup is retried, not
+// rejected as a series Scrob does not track.
+func TestWriteDroppedRetriesWhenTheLookupFailsTemporarily(t *testing.T) {
+	result := applyOneDrop(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}, seriesDropEvent(pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_DROPPED, map[string]string{"tmdb": "1399"}), false)
+
+	if result.GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_RETRY {
+		t.Fatalf("Status = %v, want RETRY", result.GetStatus())
+	}
+}

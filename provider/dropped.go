@@ -147,13 +147,13 @@ func resolveShowID(ctx context.Context, client *apiClient, ids scrobIDs) (int, *
 		if fault == nil && lookup.ID > 0 {
 			return lookup.ID, nil
 		}
-		if fault != nil && connectionWide(fault) {
+		if fault != nil && !lookupMiss(fault) {
 			return 0, fault
 		}
 	}
 	var dropped scrobDroppedResponse
 	if fault := client.get(ctx, "/history/dropped", nil, &dropped); fault != nil {
-		if connectionWide(fault) {
+		if !lookupMiss(fault) {
 			return 0, fault
 		}
 		return 0, nil
@@ -170,4 +170,11 @@ func resolveShowID(ctx context.Context, client *apiClient, ids scrobIDs) (int, *
 		}
 	}
 	return 0, nil
+}
+
+// lookupMiss reports a lookup Scrob answered with a 4xx, meaning it has no
+// such show. Anything else, such as Scrob being briefly unavailable, is
+// returned so the event is retried rather than rejected as an unknown show.
+func lookupMiss(fault *pluginv1.WatchSyncFault) bool {
+	return fault.GetCode() == pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_INVALID_REQUEST
 }
