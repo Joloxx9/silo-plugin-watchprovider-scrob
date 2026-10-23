@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
 )
@@ -31,11 +32,11 @@ func progressServer(t *testing.T, entries []scrobProgressEntry) (*apiClient, fun
 func TestListProgressImportsMoviesAndEpisodes(t *testing.T) {
 	season, episode := 2, 5
 	client, done := progressServer(t, []scrobProgressEntry{
-		{Media: scrobMedia{Type: "movie", TMDBID: 42, Title: "Heat"}, ProgressFraction: 0.375},
+		{Media: scrobMedia{Type: "movie", TMDBID: 42, Title: "Heat"}, ProgressFraction: 0.375, WatchedAt: scrobTimePtr(time.Unix(100, 0))},
 		{Media: scrobMedia{
 			Type: "episode", TMDBID: 777, Title: "Ep", SeasonNumber: &season, EpisodeNumber: &episode,
 			ShowTitle: "Show", ShowTMDBID: 100,
-		}, ProgressFraction: 0.10},
+		}, ProgressFraction: 0.10, WatchedAt: scrobTimePtr(time.Unix(100, 0))},
 	})
 	defer done()
 
@@ -73,8 +74,8 @@ func TestListProgressImportsMoviesAndEpisodes(t *testing.T) {
 // at once.
 func TestListProgressSkipsPositionsOutsideRange(t *testing.T) {
 	client, done := progressServer(t, []scrobProgressEntry{
-		{Media: scrobMedia{Type: "movie", TMDBID: 1, Title: "Done"}, ProgressFraction: 1.0},
-		{Media: scrobMedia{Type: "movie", TMDBID: 2, Title: "Unstarted"}, ProgressFraction: 0},
+		{Media: scrobMedia{Type: "movie", TMDBID: 1, Title: "Done"}, ProgressFraction: 1.0, WatchedAt: scrobTimePtr(time.Unix(100, 0))},
+		{Media: scrobMedia{Type: "movie", TMDBID: 2, Title: "Unstarted"}, ProgressFraction: 0, WatchedAt: scrobTimePtr(time.Unix(100, 0))},
 	})
 	defer done()
 
@@ -84,5 +85,18 @@ func TestListProgressSkipsPositionsOutsideRange(t *testing.T) {
 	}
 	if len(resp.GetItems()) != 0 {
 		t.Fatalf("listProgress() = %d items, want 0", len(resp.GetItems()))
+	}
+}
+
+// Silo rejects a resume point without a time, so such a row is skipped.
+func TestListProgressSkipsARowWithoutATime(t *testing.T) {
+	client, done := progressServer(t, []scrobProgressEntry{
+		{Media: scrobMedia{Type: "movie", TMDBID: 42, Title: "Heat"}, ProgressFraction: 0.5},
+	})
+	defer done()
+
+	resp, err := NewServer(http.DefaultClient).listProgress(context.Background(), client)
+	if err != nil || len(resp.GetItems()) != 0 {
+		t.Errorf("listProgress() = %d items, %v; want none", len(resp.GetItems()), err)
 	}
 }
