@@ -261,3 +261,35 @@ func TestApplyEventsStartsTheExportCutoffForAnOlderConnection(t *testing.T) {
 		t.Errorf("results = %+v, want one NO_CHANGE", r)
 	}
 }
+
+// A stop can arrive with only a few seconds left on the call. The first event
+// must still run instead of coming back as a retry that fails the same way.
+func TestApplyEventsRunsTheFirstEventUnderAShortDeadline(t *testing.T) {
+	s, url, done := rpcServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	defer done()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := s.ApplyEvents(ctx, &pluginv1.WatchSyncApplyEventsRequest{
+		Context: authContext(url),
+		Events: []*pluginv1.WatchSyncEvent{{
+			EventId:           "stop",
+			Operation:         pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP,
+			PlaybackSessionId: "sess-1",
+			PositionSeconds:   10,
+			DurationSeconds:   100,
+			Media: &pluginv1.WatchSyncMedia{
+				MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
+				ExternalIds: map[string]string{"tmdb": "42"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyEvents() error: %v", err)
+	}
+	if r := resp.GetResults(); len(r) != 1 || r[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED {
+		t.Errorf("results = %+v, want the stop APPLIED", r)
+	}
+}

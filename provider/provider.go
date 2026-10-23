@@ -29,6 +29,10 @@ const (
 	// results before its RPC deadline.
 	syncBudget         = 90 * time.Second
 	syncDeadlineMargin = 5 * time.Second
+	// With a deadline closer than the margin allows, the margin shrinks to
+	// this fraction of the time left, so a short deadline still leaves time
+	// to work instead of turning every event into a retry.
+	syncDeadlineMarginFraction = 5
 )
 
 type Server struct {
@@ -144,8 +148,11 @@ func (s *Server) ApplyEvents(ctx context.Context, req *pluginv1.WatchSyncApplyEv
 			end++
 		}
 		group := events[start:end]
+		first := start == 0
 		start = end
-		if s.clock().Sub(startedAt) >= budget {
+		// The first group always runs: under a tight deadline the budget can
+		// be zero, and answering only with retries never makes progress.
+		if !first && s.clock().Sub(startedAt) >= budget {
 			response.Results = append(response.Results, resultsFromFault(group, temporaryFault("Scrob sync time limit reached; the event will be retried"))...)
 			continue
 		}
@@ -350,18 +357,31 @@ func (r *resultSet) list() []*pluginv1.WatchSyncApplyResult {
 
 func syncTimeBox(ctx context.Context) time.Duration {
 	budget := syncBudget
-	if deadline, ok := ctx.Deadline(); ok {
-		budget = min(budget, time.Until(deadline)-syncDeadlineMargin)
+	if remaining, ok := timeBeforeDeadline(ctx); ok {
+		budget = min(budget, remaining)
 	}
 	return budget
 }
 
 func syncRequestLimit(ctx context.Context) time.Duration {
 	limit := syncBudget + defaultRequestTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		limit = min(limit, max(time.Until(deadline)-syncDeadlineMargin, 0))
+	if remaining, ok := timeBeforeDeadline(ctx); ok {
+		limit = min(limit, remaining)
 	}
 	return limit
+}
+
+// timeBeforeDeadline is the time left before the call's deadline, less the
+// margin: syncDeadlineMargin, or a fraction of the time left when the
+// deadline is closer than that.
+func timeBeforeDeadline(ctx context.Context) (time.Duration, bool) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0, false
+	}
+	remaining := max(time.Until(deadline), 0)
+	margin := min(syncDeadlineMargin, remaining/syncDeadlineMarginFraction)
+	return remaining - margin, true
 }
 
 func (s *Server) clock() time.Time {
