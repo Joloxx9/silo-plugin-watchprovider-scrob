@@ -19,6 +19,11 @@ import (
 // Silo and Scrob can receive the same play twice.
 const jellyfinWebhookPath = "/webhooks/jellyfin"
 
+// scrobbleSource names the plugin in Scrob's Now Playing and history. Scrob
+// reads the optional top-level "source" on its Jellyfin webhook; a Scrob
+// without that field ignores it and labels the play "Jellyfin".
+const scrobbleSource = "silo"
+
 // ticksPerSecond is the Jellyfin tick, 100 nanoseconds.
 const ticksPerSecond = 10_000_000
 
@@ -51,6 +56,7 @@ type jellyfinSession struct {
 }
 
 type jellyfinWebhook struct {
+	Source           string          `json:"source"`
 	NotificationType string          `json:"NotificationType"`
 	Item             jellyfinItem    `json:"Item"`
 	Session          jellyfinSession `json:"Session"`
@@ -129,6 +135,7 @@ func jellyfinWebhookBody(event *pluginv1.WatchSyncEvent, notification string, pa
 		item.IndexNumber = &episode
 	}
 	return jellyfinWebhook{
+		Source:           scrobbleSource,
 		NotificationType: notification,
 		Item:             item,
 		Session: jellyfinSession{

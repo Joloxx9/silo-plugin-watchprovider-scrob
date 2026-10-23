@@ -58,6 +58,9 @@ func TestScrobbleReportsEpisodeAsJellyfinWebhook(t *testing.T) {
 	if want := "/api/proxy" + jellyfinWebhookPath; path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
+	if got.Source != "silo" {
+		t.Errorf("source = %q, want silo so Scrob labels the play Silo", got.Source)
+	}
 	if got.NotificationType != "PlaybackStart" {
 		t.Errorf("NotificationType = %q, want PlaybackStart", got.NotificationType)
 	}

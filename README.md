@@ -21,6 +21,10 @@ reaches it only through a media-server webhook, so the plugin posts the
 Jellyfin webhook shape to Scrob's connection-less webhook route, authenticated
 by the connection's own API key. No extra setup is needed in Scrob.
 
+The webhook names its source `silo`, so Scrob versions that read the field
+(ellite/scrob#506) show these plays as Silo in Now Playing and history. Older
+versions ignore it and show them as Jellyfin.
+
 Scrob forwards Now Playing to the services connected to it, such as Trakt or
 Simkl. If you connect one of those to both Silo and Scrob, it receives the play
 twice: once scrobbled live through Scrob, and once from Silo's own connection.
