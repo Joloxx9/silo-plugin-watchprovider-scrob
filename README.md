@@ -30,6 +30,15 @@ Scrob v2.33 and later show these plays as Silo, with Silo's icon, in Now Playing
 and history. Older versions ignore the field and show the plays as Kodi or
 Manual.
 
+A finished playback does not end through the webhook. The webhook would stamp
+the play with the moment Scrob received the stop, and Silo would import that
+play back as a second viewing. Instead, the plugin writes a play Silo counted
+with `POST /history` at Silo's own watch time, then dismisses the Now Playing
+session. A stop that Scrob would count (90% or more) but Silo did not is only
+dismissed. An unfinished stop still goes through the webhook. A stop also
+clears the session of a playback that started under a version that used
+Scrob's Jellyfin webhook, so updating mid-playback leaves nothing behind.
+
 Scrob forwards Now Playing to the services connected to it, such as Trakt or
 Simkl. If you connect one of those to both Silo and Scrob, it receives the play
 twice: once scrobbled live through Scrob, and once from Silo's own connection.
