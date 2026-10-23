@@ -214,7 +214,7 @@ func watchEventBody(event *pluginv1.WatchSyncEvent) (scrobWatchEventCreate, bool
 	if ids.empty() {
 		return scrobWatchEventCreate{}, false
 	}
-	body := scrobWatchEventCreate{TMDBID: ids.TMDB, TVDBID: ids.TVDB, MediaType: kind, Completed: true}
+	body := scrobWatchEventCreate{TMDBID: ids.TMDB, TVDBID: ids.TVDB, MediaType: kind, Completed: true, Source: scrobbleSource}
 	if occurred := event.GetOccurredAt(); occurred != nil && occurred.CheckValid() == nil && !occurred.AsTime().IsZero() {
 		body.WatchedAt = occurred.AsTime().UTC().Format(time.RFC3339)
 	}

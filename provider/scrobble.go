@@ -20,8 +20,9 @@ import (
 const jellyfinWebhookPath = "/webhooks/jellyfin"
 
 // scrobbleSource names the plugin in Scrob's Now Playing and history. Scrob
-// reads the optional top-level "source" on its Jellyfin webhook; a Scrob
-// without that field ignores it and labels the play "Jellyfin".
+// reads the optional "source" on POST /history and on its Jellyfin webhook; a
+// Scrob without the field ignores it and labels the play "Manual" or
+// "Jellyfin".
 const scrobbleSource = "silo"
 
 // ticksPerSecond is the Jellyfin tick, 100 nanoseconds.

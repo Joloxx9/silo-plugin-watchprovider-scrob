@@ -19,6 +19,10 @@ func watchedExportServer(t *testing.T, held []scrobItemEvent) (*apiClient, *[]st
 	posted := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			var body scrobWatchEventCreate
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Source != "silo" {
+				t.Errorf("exported play source = %q (err %v), want silo", body.Source, err)
+			}
 			posted = append(posted, r.URL.Path)
 			_, _ = w.Write([]byte(`{}`))
 			return
