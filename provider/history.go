@@ -312,9 +312,12 @@ func watchEventBody(event *pluginv1.WatchSyncEvent) (scrobWatchEventCreate, bool
 		body.WatchedAt = occurred.AsTime().UTC().Format(time.RFC3339)
 	}
 	if kind == "episode" {
+		// Scrob finds an episode by its show and numbers when it has them,
+		// which also creates an episode it has not seen; without series ids it
+		// looks the episode up by its own id.
 		seriesIDs := idsFromExternal(media.GetSeriesExternalIds())
 		if seriesIDs.TMDB <= 0 && seriesIDs.TVDB <= 0 {
-			return scrobWatchEventCreate{}, false
+			return body, true
 		}
 		body.SeriesTMDBID = seriesIDs.TMDB
 		body.SeriesTVDBID = seriesIDs.TVDB

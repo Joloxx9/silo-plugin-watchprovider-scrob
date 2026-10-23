@@ -219,7 +219,9 @@ func TestMarkUnwatchedTreatsNotFoundAsNoChange(t *testing.T) {
 	}
 }
 
-func TestWatchEventBodyRequiresSeriesIDForEpisode(t *testing.T) {
+// An episode with its own id but no series id is still exported, looked up
+// by that id; with series ids it carries the show and numbers too.
+func TestWatchEventBodyForAnEpisode(t *testing.T) {
 	event := &pluginv1.WatchSyncEvent{
 		Media: &pluginv1.WatchSyncMedia{
 			MediaType:     pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE,
@@ -228,8 +230,8 @@ func TestWatchEventBodyRequiresSeriesIDForEpisode(t *testing.T) {
 			EpisodeNumber: 2,
 		},
 	}
-	if _, ok := watchEventBody(event); ok {
-		t.Fatalf("watchEventBody() ok = true for episode with no series id, want false")
+	if body, ok := watchEventBody(event); !ok || body.TMDBID != 42 || body.SeasonNumber != nil {
+		t.Fatalf("watchEventBody() = %+v, %v; want the episode's own id only", body, ok)
 	}
 	event.Media.SeriesExternalIds = map[string]string{"tmdb": "7"}
 	body, ok := watchEventBody(event)
