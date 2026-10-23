@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,75 +15,153 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const historyPageSize = 100
+const (
+	// historyPageSize is Scrob's largest GET /history page.
+	historyPageSize = 100
+	// Scrob has no "changed since" filter, and a play imported into Scrob from
+	// another service can be dated in the past. An incremental import reads
+	// the newest plays back to this far before the newest one it saw; a full
+	// import, run at most once per fullImportInterval, catches older additions.
+	incrementalOverlap = 48 * time.Hour
+	fullImportInterval = 24 * time.Hour
+)
 
-// listWatched reads every page of Scrob's GET /history and aggregates it into
-// one state per title: Scrob returns individual watch events, potentially
-// several per title across many pages, and the host's WATCHED state is a
-// per-title play_count and last_watched_at rather than a per-event log, so
-// the aggregation has to happen before any of it is returned. This traversal
-// is therefore always a single, complete snapshot: there is no durable
-// cursor and no next_page_token, bounded by the same time box as an
-// ApplyEvents call.
+// watchedCursor is the durable checkpoint the host keeps between imports.
+type watchedCursor struct {
+	// Newest is the newest play time any finished import saw.
+	Newest time.Time `json:"newest"`
+	// FullAt is when the last finished full import started.
+	FullAt time.Time `json:"full_at"`
+}
+
+// watchedPage carries one import from page to page.
+type watchedPage struct {
+	Full      bool      `json:"full"`
+	Page      int       `json:"page"`
+	Newest    time.Time `json:"newest"`
+	StopAt    time.Time `json:"stop_at,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	PrevFull  time.Time `json:"prev_full,omitempty"`
+}
+
+// listWatched returns one page of Scrob's history, newest first, per call. The
+// host pages through with next_page_token, so a large history no longer has to
+// fit in one call's time limit.
+//
+// After the first import, most imports are incremental: they stop at plays
+// older than the cursor's newest play less incrementalOverlap. The host keeps
+// the newest play per title and skips a play it already has, so neither the
+// overlap nor a title appearing on several pages adds plays. Absent titles
+// mean nothing, so no traversal is a complete snapshot.
 func (s *Server) listWatched(ctx context.Context, client *apiClient, req *pluginv1.WatchSyncListRemoteStateRequest) (*pluginv1.WatchSyncListRemoteStateResponse, error) {
-	if strings.TrimSpace(req.GetPageToken()) != "" {
-		return &pluginv1.WatchSyncListRemoteStateResponse{Fault: invalidRequestFault("Scrob watched history has no continuation token")}, nil
+	page, fault := s.watchedTraversal(req)
+	if fault != nil {
+		return &pluginv1.WatchSyncListRemoteStateResponse{Fault: fault}, nil
 	}
-	budget := syncTimeBox(ctx)
 	ctx, cancel := context.WithTimeout(ctx, syncRequestLimit(ctx))
 	defer cancel()
-	startedAt := s.clock()
+
+	size := historyPageSize
+	if requested := int(req.GetPageSize()); requested > 0 {
+		size = min(size, requested)
+	}
+	query := url.Values{"page": {strconv.Itoa(page.Page)}, "page_size": {strconv.Itoa(size)}}
+	var payload scrobHistoryResponse
+	if fault := client.get(ctx, "/history", query, &payload); fault != nil {
+		return &pluginv1.WatchSyncListRemoteStateResponse{Fault: fault}, nil
+	}
 
 	type aggregate struct {
 		item      *pluginv1.WatchSyncRemoteState
 		playCount int32
-		lastAt    *timestamppb.Timestamp
 	}
 	aggregated := make(map[string]*aggregate)
-	order := make([]string, 0)
-
-	for page := 1; ; page++ {
-		if s.clock().Sub(startedAt) >= budget {
-			return &pluginv1.WatchSyncListRemoteStateResponse{Fault: temporaryFault("Scrob watched history is large; the sync will retry")}, nil
-		}
-		query := url.Values{"page": {strconv.Itoa(page)}, "page_size": {strconv.Itoa(historyPageSize)}}
-		var payload scrobHistoryResponse
-		if fault := client.get(ctx, "/history", query, &payload); fault != nil {
-			return &pluginv1.WatchSyncListRemoteStateResponse{Fault: fault}, nil
-		}
-		for _, event := range payload.Results {
-			item, key, ok := watchedStateFromEvent(event)
-			if !ok {
-				continue
-			}
-			entry, exists := aggregated[key]
-			if !exists {
-				aggregated[key] = &aggregate{item: item, playCount: 1, lastAt: item.GetWatched().GetLastWatchedAt()}
-				order = append(order, key)
-				continue
-			}
-			entry.playCount++
-			if at := item.GetWatched().GetLastWatchedAt(); at != nil && (entry.lastAt == nil || at.AsTime().After(entry.lastAt.AsTime())) {
-				entry.lastAt = at
-			}
-		}
-		if page >= payload.TotalPages || len(payload.Results) == 0 {
+	order := make([]string, 0, len(payload.Results))
+	finished := len(payload.Results) < size || page.Page >= payload.TotalPages
+	for _, event := range payload.Results {
+		if event.WatchedAt == nil {
+			// Plays without a time sort last and cannot be imported.
+			finished = true
 			break
 		}
+		at := event.WatchedAt.Time()
+		if !page.Full && at.Before(page.StopAt) {
+			finished = true
+			break
+		}
+		if at.After(page.Newest) {
+			page.Newest = at
+		}
+		item, key, ok := watchedStateFromEvent(event)
+		if !ok {
+			continue
+		}
+		// The page is newest first, so a title's first play here is its latest.
+		if entry, exists := aggregated[key]; exists {
+			entry.playCount++
+			continue
+		}
+		aggregated[key] = &aggregate{item: item, playCount: 1}
+		order = append(order, key)
 	}
 
-	response := &pluginv1.WatchSyncListRemoteStateResponse{CompleteSnapshot: true}
+	response := &pluginv1.WatchSyncListRemoteStateResponse{}
 	for _, key := range order {
 		entry := aggregated[key]
-		entry.item.Watched = &pluginv1.WatchSyncRemoteWatchedState{PlayCount: entry.playCount, LastWatchedAt: entry.lastAt}
+		entry.item.Watched.PlayCount = entry.playCount
 		response.Items = append(response.Items, entry.item)
 	}
+	if finished {
+		next := watchedCursor{Newest: page.Newest, FullAt: page.PrevFull}
+		if page.Full {
+			next.FullAt = page.StartedAt
+		}
+		response.NextCursor = encodeToken(next)
+		return response, nil
+	}
+	page.Page++
+	response.NextPageToken = encodeToken(page)
 	return response, nil
 }
 
+// watchedTraversal resumes the import a page token names, or starts one from
+// the cursor: a full import when there is no usable cursor or the last full
+// import is fullImportInterval old, an incremental one otherwise.
+func (s *Server) watchedTraversal(req *pluginv1.WatchSyncListRemoteStateRequest) (watchedPage, *pluginv1.WatchSyncFault) {
+	if strings.TrimSpace(req.GetPageToken()) != "" {
+		var page watchedPage
+		if !decodeToken(req.GetPageToken(), &page) || page.Page < 2 || page.StartedAt.IsZero() {
+			return watchedPage{}, invalidRequestFault("Scrob watched history page token is invalid")
+		}
+		return page, nil
+	}
+	var cursor watchedCursor
+	_ = decodeToken(req.GetCursor(), &cursor)
+	now := s.clock().UTC()
+	page := watchedPage{Page: 1, Newest: cursor.Newest, StartedAt: now, PrevFull: cursor.FullAt}
+	page.Full = cursor.FullAt.IsZero() || cursor.Newest.IsZero() || now.Sub(cursor.FullAt) >= fullImportInterval
+	if !page.Full {
+		page.StopAt = cursor.Newest.Add(-incrementalOverlap)
+	}
+	return page, nil
+}
+
+func encodeToken(value any) string {
+	encoded, _ := json.Marshal(value)
+	return base64.RawURLEncoding.EncodeToString(encoded)
+}
+
+func decodeToken(value string, into any) bool {
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(value))
+	if err != nil || len(decoded) == 0 {
+		return false
+	}
+	return json.Unmarshal(decoded, into) == nil
+}
+
 // watchedStateFromEvent maps one completed history event to a WATCHED state
-// with play_count 1; listWatched folds repeats across events into one entry
-// per title. It reports false for an event Scrob did not finish, or whose
+// with play_count 1; listWatched folds a title's repeats on one page into one
+// entry. It reports false for an event Scrob did not finish, or whose
 // title the plugin cannot identify.
 func watchedStateFromEvent(event scrobHistoryEvent) (*pluginv1.WatchSyncRemoteState, string, bool) {
 	if event.WatchedAt == nil {
@@ -141,59 +221,80 @@ const unsupportedPlayMessage = "Scrob watched sync requires a movie or episode w
 // never match to the second.
 const recentWatchWindow = 10 * time.Minute
 
-func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
+// markWatched exports the plays Silo's history reconciliation sends.
+//
+// That history is not only Silo's own playback: it also holds every play Silo
+// imported from elsewhere, such as a media server's history, usually stamped
+// with a different time than Scrob has for the same viewing. Scrob would take
+// each as a new play and push it to every service connected to it.
+//
+// So a play from before exportSince, set when the profile connected, is
+// exported only when Scrob has no play of the title at all: the title still
+// ends up watched in Scrob, but a viewing Scrob already holds under another
+// time is not counted twice. A later play is skipped only when Scrob holds a
+// play within recentWatchWindow of it, so a rewatch still exports.
+func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet, exportSince time.Time) *pluginv1.WatchSyncFault {
 	for _, event := range events {
-		body, ok := watchEventBody(event)
-		if !ok {
+		bodies := watchEventBodies(event)
+		if len(bodies) == 0 {
 			results.reject(event, unsupportedPlayMessage)
 			continue
 		}
-		held, fault := scrobAlreadyHasPlay(ctx, client, event)
+		occurred := event.GetOccurredAt()
+		older := occurred != nil && occurred.CheckValid() == nil && occurred.AsTime().Before(exportSince)
+		held, fault := scrobAlreadyHasPlay(ctx, client, event, older)
 		if fault != nil && connectionWide(fault) {
 			return fault
+		}
+		if fault != nil && older {
+			// Without the lookup an older play could duplicate a viewing
+			// Scrob holds, so it waits for a retry instead.
+			results.fail(event, fault)
+			continue
 		}
 		if held {
 			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
 			continue
 		}
-		if fault := client.post(ctx, "/history", body, nil); fault != nil {
+		status, fault := writePlay(ctx, client, bodies)
+		if fault != nil {
 			if connectionWide(fault) {
 				return fault
 			}
 			results.fail(event, fault)
 			continue
 		}
-		results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED)
+		results.set(event, status)
 	}
 	return nil
 }
 
 // markUnwatched removes the play Silo no longer holds.
 //
-// When the event says which play it was, only that one is deleted: Scrob keeps
-// a row per viewing, and dropping the title's whole history because one
-// rewatch was undone would destroy counts Silo never asked about. Without a
-// timestamp there is nothing to single out, so the title's history is removed
-// as before.
+// Silo sends one unwatch per history row it removed, with that play's time, so
+// only the Scrob play at that time is deleted. Scrob keeps a row per viewing,
+// and a title's other plays, including ones Silo never had, must survive.
+// When no Scrob play is close to that time there is nothing of Silo's to
+// remove, so the event changes nothing.
 func markUnwatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
 	for _, event := range events {
-		path, itemQuery, ok := unwatchItemPath(event.GetMedia())
-		if !ok {
-			results.reject(event, unsupportedPlayMessage)
+		eventID, found, fault := scrobPlayAt(ctx, client, event)
+		switch {
+		case fault != nil && connectionWide(fault):
+			return fault
+		case fault != nil:
+			results.fail(event, fault)
+			continue
+		case !found:
+			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
 			continue
 		}
-		query := itemQuery
-		if eventID, found, fault := scrobPlayAt(ctx, client, event); fault != nil && connectionWide(fault) {
-			return fault
-		} else if found {
-			path, query = fmt.Sprintf("/history/event/%d", eventID), nil
-		}
-		status, fault := client.delete(ctx, path, query)
+		status, fault := client.delete(ctx, fmt.Sprintf("/history/event/%d", eventID), nil)
 		switch {
 		case fault == nil:
 			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED)
 		case status == http.StatusNotFound:
-			// Scrob has no watch event for this item: already the desired state.
+			// The play is already gone: the desired state.
 			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
 		case connectionWide(fault):
 			return fault
@@ -204,54 +305,66 @@ func markUnwatched(ctx context.Context, client *apiClient, events []*pluginv1.Wa
 	return nil
 }
 
-func watchEventBody(event *pluginv1.WatchSyncEvent) (scrobWatchEventCreate, bool) {
+// watchEventBodies are the POST /history bodies to try for one play, in order.
+//
+// An episode is tried by its own ids first. Given a show and numbers, Scrob
+// picks the episode by those numbers in its own (normally TMDB) episode order
+// and never looks at the episode's id, so a show Silo numbers differently,
+// such as by TVDB's order, would record the wrong episode. The show and
+// numbers follow when Scrob does not know the episode by its id: that path can
+// create an episode Scrob has not seen.
+func watchEventBodies(event *pluginv1.WatchSyncEvent) []scrobWatchEventCreate {
 	media := event.GetMedia()
-	ids := idsFromExternal(media.GetExternalIds())
 	kind := mediaType(media.GetMediaType())
 	if kind != "movie" && kind != "episode" {
-		return scrobWatchEventCreate{}, false
+		return nil
 	}
-	if ids.empty() {
-		return scrobWatchEventCreate{}, false
-	}
-	body := scrobWatchEventCreate{TMDBID: ids.TMDB, TVDBID: ids.TVDB, MediaType: kind, Completed: true}
+	base := scrobWatchEventCreate{MediaType: kind, Completed: true, Source: scrobbleSource}
 	if occurred := event.GetOccurredAt(); occurred != nil && occurred.CheckValid() == nil && !occurred.AsTime().IsZero() {
-		body.WatchedAt = occurred.AsTime().UTC().Format(time.RFC3339)
+		base.WatchedAt = occurred.AsTime().UTC().Format(time.RFC3339)
 	}
-	if kind == "episode" {
-		seriesIDs := idsFromExternal(media.GetSeriesExternalIds())
-		if seriesIDs.TMDB <= 0 && seriesIDs.TVDB <= 0 {
-			return scrobWatchEventCreate{}, false
+	var bodies []scrobWatchEventCreate
+	ids := idsFromExternal(media.GetExternalIds())
+	if ids.TMDB > 0 || ids.TVDB > 0 {
+		own := base
+		own.TMDBID, own.TVDBID = ids.TMDB, ids.TVDB
+		bodies = append(bodies, own)
+	}
+	if kind == "episode" && media.GetSeasonNumber() >= 0 && media.GetEpisodeNumber() > 0 {
+		series := idsFromExternal(media.GetSeriesExternalIds())
+		if series.TMDB > 0 || series.TVDB > 0 {
+			numbered := base
+			season, episode := int(media.GetSeasonNumber()), int(media.GetEpisodeNumber())
+			numbered.SeriesTMDBID, numbered.SeriesTVDBID = series.TMDB, series.TVDB
+			numbered.SeasonNumber, numbered.EpisodeNumber = &season, &episode
+			bodies = append(bodies, numbered)
 		}
-		body.SeriesTMDBID = seriesIDs.TMDB
-		body.SeriesTVDBID = seriesIDs.TVDB
-		season, episode := int(media.GetSeasonNumber()), int(media.GetEpisodeNumber())
-		body.SeasonNumber = &season
-		body.EpisodeNumber = &episode
 	}
-	return body, true
+	return bodies
 }
 
-// unwatchItemPath names the title to remove. The query is returned separately
-// because the request builder escapes the path: a "?" folded into it becomes
-// %3F, the route never matches, and Scrob's 404 reads as "already unwatched".
-func unwatchItemPath(media *pluginv1.WatchSyncMedia) (string, url.Values, bool) {
-	kind := mediaType(media.GetMediaType())
-	if kind != "movie" && kind != "episode" {
-		return "", nil, false
+// writePlay records one completed play with the first of bodies Scrob can
+// place. A 409 is Scrob already holding a play within its duplicate window.
+func writePlay(ctx context.Context, client *apiClient, bodies []scrobWatchEventCreate) (pluginv1.WatchSyncApplyStatus, *pluginv1.WatchSyncFault) {
+	var last *pluginv1.WatchSyncFault
+	for _, body := range bodies {
+		code, fault := client.postStatus(ctx, "/history", body, nil)
+		switch {
+		case fault == nil:
+			return pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED, nil
+		case code == http.StatusConflict:
+			return pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE, nil
+		case code == http.StatusNotFound:
+			last = fault
+			continue
+		default:
+			return 0, fault
+		}
 	}
-	ids := idsFromExternal(media.GetExternalIds())
-	if ids.TMDB <= 0 && ids.TVDB <= 0 {
-		return "", nil, false
+	if last == nil {
+		last = invalidRequestFault(unsupportedPlayMessage)
 	}
-	query := url.Values{"media_type": {kind}}
-	if ids.TMDB > 0 {
-		query.Set("tmdb_id", strconv.Itoa(ids.TMDB))
-	}
-	if ids.TVDB > 0 {
-		query.Set("tvdb_id", strconv.Itoa(ids.TVDB))
-	}
-	return "/history/item", query, true
+	return 0, last
 }
 
 // scrobAlreadyHasPlay reports whether Scrob already holds this play.
@@ -261,9 +374,10 @@ func unwatchItemPath(media *pluginv1.WatchSyncMedia) (string, url.Values, bool) 
 // holds from another source may be far down the log, and missing it would
 // export a duplicate.
 //
-// A failed lookup loses the check rather than the export: refusing to export
-// at all would be worse than risking a duplicate.
-func scrobAlreadyHasPlay(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent) (bool, *pluginv1.WatchSyncFault) {
+// With anyPlay, any play of the title counts; otherwise only one within
+// recentWatchWindow of this play does. The caller decides what a failed
+// lookup means.
+func scrobAlreadyHasPlay(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent, anyPlay bool) (bool, *pluginv1.WatchSyncFault) {
 	occurred := event.GetOccurredAt()
 	if occurred == nil || occurred.CheckValid() != nil || occurred.AsTime().IsZero() {
 		return false, nil
@@ -275,6 +389,9 @@ func scrobAlreadyHasPlay(ctx context.Context, client *apiClient, event *pluginv1
 	var payload scrobItemEventsResponse
 	if fault := client.get(ctx, "/history/item-events", query, &payload); fault != nil {
 		return false, fault
+	}
+	if anyPlay {
+		return len(payload.Events) > 0, nil
 	}
 	want := occurred.AsTime()
 	for _, held := range payload.Events {
@@ -323,18 +440,16 @@ func itemEventsQuery(media *pluginv1.WatchSyncMedia) (url.Values, bool) {
 
 // scrobPlayAt finds the Scrob watch event for this play, so an unwatch removes
 // one viewing rather than the title's whole history. It reuses the per-title
-// lookup the duplicate check already relies on.
-//
-// A missing timestamp, an unidentifiable title or a failed lookup simply means
-// no single play was found, and the caller falls back to removing the item.
+// lookup the duplicate check already relies on. An event without a time or a
+// title Scrob can look up is rejected: there is no single play to name.
 func scrobPlayAt(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent) (int, bool, *pluginv1.WatchSyncFault) {
 	occurred := event.GetOccurredAt()
 	if occurred == nil || occurred.CheckValid() != nil || occurred.AsTime().IsZero() {
-		return 0, false, nil
+		return 0, false, invalidRequestFault("Scrob unwatch needs the play's watch time")
 	}
 	query, ok := itemEventsQuery(event.GetMedia())
 	if !ok {
-		return 0, false, nil
+		return 0, false, invalidRequestFault(unsupportedPlayMessage)
 	}
 	var payload scrobItemEventsResponse
 	if fault := client.get(ctx, "/history/item-events", query, &payload); fault != nil {

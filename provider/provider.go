@@ -19,6 +19,9 @@ import (
 const (
 	capabilityID  = "scrob"
 	configBaseURL = "scrob_server.server_url"
+	// exportSinceAttribute holds the connection's export cutoff (see
+	// markWatched), kept with the credentials the host persists.
+	exportSinceAttribute = "scrob.export_since"
 
 	// ApplyEvents and a ListRemoteState page stop starting new work after
 	// this long, or sooner when the call's deadline, less
@@ -26,6 +29,10 @@ const (
 	// results before its RPC deadline.
 	syncBudget         = 90 * time.Second
 	syncDeadlineMargin = 5 * time.Second
+	// With a deadline closer than the margin allows, the margin shrinks to
+	// this fraction of the time left, so a short deadline still leaves time
+	// to work instead of turning every event into a retry.
+	syncDeadlineMarginFraction = 5
 )
 
 type Server struct {
@@ -48,7 +55,7 @@ func (s *Server) ExchangeAPIKey(ctx context.Context, req *pluginv1.WatchSyncExch
 		return &pluginv1.WatchSyncCredentialResponse{Fault: fault}, nil
 	}
 	return &pluginv1.WatchSyncCredentialResponse{
-		Credentials: credentials(req.GetApiKey(), client.baseURL.String()),
+		Credentials: credentials(req.GetApiKey(), client.baseURL.String(), s.clock()),
 		Account:     account,
 	}, nil
 }
@@ -95,6 +102,10 @@ func (s *Server) ListRemoteState(ctx context.Context, req *pluginv1.WatchSyncLis
 		return s.listProgress(ctx, client)
 	case pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_RATING:
 		return s.listRatings(ctx, client)
+	case pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_DROPPED:
+		return s.listDropped(ctx, client)
+	case pluginv1.WatchSyncRemoteStateKind_WATCH_SYNC_REMOTE_STATE_KIND_WATCHLIST:
+		return s.listWatchlist(ctx, client, connectionSetting(req.GetContext(), settingRemoveWatchedMovies, true))
 	default:
 		return &pluginv1.WatchSyncListRemoteStateResponse{
 			Fault: invalidRequestFault("Scrob does not support the requested state family"),
@@ -121,28 +132,43 @@ func (s *Server) ApplyEvents(ctx context.Context, req *pluginv1.WatchSyncApplyEv
 	response := &pluginv1.WatchSyncApplyEventsResponse{
 		Results: make([]*pluginv1.WatchSyncApplyResult, 0, len(events)),
 	}
+	// A connection made before the cutoff existed starts it now; the host
+	// keeps it from then on.
+	exportSince, known := exportCutoff(req.GetContext().GetCredentials())
+	if !known {
+		exportSince = s.clock().UTC().Truncate(time.Second)
+		updated := cloneCredentials(req.GetContext().GetCredentials())
+		if updated.SecretAttributes == nil {
+			updated.SecretAttributes = map[string]string{}
+		}
+		updated.SecretAttributes[exportSinceAttribute] = exportSince.Format(time.RFC3339)
+		response.UpdatedCredentials = updated
+	}
 	for start := 0; start < len(events); {
 		end := start + 1
 		for end < len(events) && events[end].GetOperation() == events[start].GetOperation() {
 			end++
 		}
 		group := events[start:end]
+		first := start == 0
 		start = end
-		if s.clock().Sub(startedAt) >= budget {
+		// The first group always runs: under a tight deadline the budget can
+		// be zero, and answering only with retries never makes progress.
+		if !first && s.clock().Sub(startedAt) >= budget {
 			response.Results = append(response.Results, resultsFromFault(group, temporaryFault("Scrob sync time limit reached; the event will be retried"))...)
 			continue
 		}
 		results := newResultSet(group)
-		connectionFault := applyGroup(ctx, client, group, results)
+		connectionFault := applyGroup(ctx, client, group, results, exportSince)
 		if connectionFault != nil {
-			return &pluginv1.WatchSyncApplyEventsResponse{Fault: connectionFault}, nil
+			return &pluginv1.WatchSyncApplyEventsResponse{UpdatedCredentials: response.UpdatedCredentials, Fault: connectionFault}, nil
 		}
 		response.Results = append(response.Results, results.list()...)
 	}
 	return response, nil
 }
 
-func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
+func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet, exportSince time.Time) *pluginv1.WatchSyncFault {
 	pending := make([]*pluginv1.WatchSyncEvent, 0, len(events))
 	for _, event := range events {
 		if strings.TrimSpace(event.GetEventId()) == "" {
@@ -156,19 +182,25 @@ func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.Watch
 	}
 	switch pending[0].GetOperation() {
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_WATCHED:
-		return markWatched(ctx, client, pending, results)
+		return markWatched(ctx, client, pending, results, exportSince)
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_UNWATCHED:
 		return markUnwatched(ctx, client, pending, results)
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SET_RATING:
 		return writeRatings(ctx, client, pending, results, false)
 	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_REMOVE_RATING:
 		return writeRatings(ctx, client, pending, results, true)
-	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_START:
-		return scrobblePlayback(ctx, client, pending, results, "PlaybackStart", false)
-	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_PAUSE:
-		return scrobblePlayback(ctx, client, pending, results, "PlaybackProgress", true)
-	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP:
-		return scrobblePlayback(ctx, client, pending, results, "PlaybackStop", false)
+	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_ADD_TO_WATCHLIST:
+		return writeWatchlist(ctx, client, pending, results, false)
+	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_REMOVE_FROM_WATCHLIST:
+		return writeWatchlist(ctx, client, pending, results, true)
+	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_DROPPED:
+		return writeDropped(ctx, client, pending, results, false)
+	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_UNMARK_DROPPED:
+		return writeDropped(ctx, client, pending, results, true)
+	case pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_START,
+		pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_PAUSE,
+		pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP:
+		return scrobblePlayback(ctx, client, pending, results, pending[0].GetOperation())
 	default:
 		for _, event := range pending {
 			results.reject(event, "Scrob does not support this watch operation")
@@ -178,11 +210,12 @@ func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.Watch
 }
 
 func validateAccount(ctx context.Context, client *apiClient) (*pluginv1.WatchSyncAccount, *pluginv1.WatchSyncFault) {
-	// Scrob has no api-key-friendly whoami endpoint (GET /auth/me requires a
-	// session JWT), so a ratings read doubles as the connectivity and
-	// credential check.
-	var response scrobRatingsResponse
-	if fault := client.get(ctx, "/ratings", nil, &response); fault != nil {
+	// GET /auth/me needs a session JWT, but GET /profile/me takes the API
+	// key and returns one small object, so it is the connectivity and
+	// credential check. The account stays named after the server: its id is
+	// what existing connections were stored under.
+	var profile map[string]any
+	if fault := client.get(ctx, "/profile/me", nil, &profile); fault != nil {
 		return nil, fault
 	}
 	label := accountLabel(client.baseURL.String())
@@ -239,11 +272,28 @@ func (s *Server) client(requestedCapability string, config *pluginv1.WatchSyncPr
 	return client, nil
 }
 
-func credentials(apiKey, baseURL string) *pluginv1.WatchSyncCredentials {
+func credentials(apiKey, baseURL string, connectedAt time.Time) *pluginv1.WatchSyncCredentials {
 	return &pluginv1.WatchSyncCredentials{
-		AccessToken:      strings.TrimSpace(apiKey),
-		SecretAttributes: map[string]string{configBaseURL: strings.TrimSpace(baseURL)},
+		AccessToken: strings.TrimSpace(apiKey),
+		SecretAttributes: map[string]string{
+			configBaseURL:        strings.TrimSpace(baseURL),
+			exportSinceAttribute: connectedAt.UTC().Truncate(time.Second).Format(time.RFC3339),
+		},
 	}
+}
+
+// exportCutoff reads the connection's export cutoff. known is false for a
+// connection made before the plugin kept one.
+func exportCutoff(credentials *pluginv1.WatchSyncCredentials) (time.Time, bool) {
+	value := strings.TrimSpace(credentials.GetSecretAttributes()[exportSinceAttribute])
+	if value == "" {
+		return time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return at, true
 }
 
 func cloneCredentials(value *pluginv1.WatchSyncCredentials) *pluginv1.WatchSyncCredentials {
@@ -314,18 +364,31 @@ func (r *resultSet) list() []*pluginv1.WatchSyncApplyResult {
 
 func syncTimeBox(ctx context.Context) time.Duration {
 	budget := syncBudget
-	if deadline, ok := ctx.Deadline(); ok {
-		budget = min(budget, time.Until(deadline)-syncDeadlineMargin)
+	if remaining, ok := timeBeforeDeadline(ctx); ok {
+		budget = min(budget, remaining)
 	}
 	return budget
 }
 
 func syncRequestLimit(ctx context.Context) time.Duration {
 	limit := syncBudget + defaultRequestTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		limit = min(limit, max(time.Until(deadline)-syncDeadlineMargin, 0))
+	if remaining, ok := timeBeforeDeadline(ctx); ok {
+		limit = min(limit, remaining)
 	}
 	return limit
+}
+
+// timeBeforeDeadline is the time left before the call's deadline, less the
+// margin: syncDeadlineMargin, or a fraction of the time left when the
+// deadline is closer than that.
+func timeBeforeDeadline(ctx context.Context) (time.Duration, bool) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0, false
+	}
+	remaining := max(time.Until(deadline), 0)
+	margin := min(syncDeadlineMargin, remaining/syncDeadlineMarginFraction)
+	return remaining - margin, true
 }
 
 func (s *Server) clock() time.Time {

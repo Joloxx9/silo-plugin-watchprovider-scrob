@@ -36,7 +36,8 @@ func (s *Server) listProgress(ctx context.Context, client *apiClient) (*pluginv1
 }
 
 // progressStateFromEntry maps one continue-watching row. It reports false for a
-// title the plugin cannot identify and for a position outside [0, 100).
+// title the plugin cannot identify, a row without a time, and a position
+// outside [0, 100).
 //
 // Scrob stores the position as a fraction of the runtime, not a percentage:
 // its own completion threshold reads `progress_percent >= 0.90`. The contract
@@ -55,13 +56,15 @@ func progressStateFromEntry(entry scrobProgressEntry) (*pluginv1.WatchSyncRemote
 	if !ok {
 		return nil, false
 	}
-	progress := &pluginv1.WatchSyncRemoteProgressState{ProgressPercent: percent}
 	// Scrob reuses the event's updated_at as the display timestamp for a
-	// progress row, which is when the position was last written.
-	if entry.WatchedAt != nil {
-		if at := entry.WatchedAt.Time(); !at.IsZero() {
-			progress.PausedAt = timestamppb.New(at)
-		}
+	// progress row, which is when the position was last written. Silo
+	// rejects a resume point without one, so such a row is skipped here.
+	if entry.WatchedAt == nil || entry.WatchedAt.Time().IsZero() {
+		return nil, false
+	}
+	progress := &pluginv1.WatchSyncRemoteProgressState{
+		ProgressPercent: percent,
+		PausedAt:        timestamppb.New(entry.WatchedAt.Time()),
 	}
 	return &pluginv1.WatchSyncRemoteState{ProviderItemKey: key, Media: media, Progress: progress}, true
 }

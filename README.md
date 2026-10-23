@@ -6,20 +6,46 @@ Connects Silo profiles to a self-hosted [Scrob](https://github.com/ellite/scrob)
 
 - Validates each profile's Scrob API key without persisting it in the plugin.
 - Imports movie and episode watch history.
-- Exports completed movie and episode watches, and unwatches, skipping a play Scrob already recorded.
+- Exports completed movie and episode watches, skipping a play Scrob already recorded. A play from before the profile connected is exported only when Scrob has no play of that title at all, so the title ends up watched in Scrob, but a viewing Scrob already holds under a different timestamp (from a media server, say) is not counted twice. A later play is skipped only when Scrob holds one within ten minutes of it. For a connection made with an older plugin version, the cutoff is its first sync after the update.
+- An unwatch removes only the Scrob play at that watch time, never the title's other plays.
 - Imports and exports movie and series ratings.
 - Imports resume positions from Scrob's continue-watching list.
 - Reports live playback, including pauses, to Scrob's Now Playing, which
   forwards it to the services connected to Scrob.
 
-The plugin deliberately does not advertise favorites or watchlist sync. Scrob models a watchlist as arbitrary named lists rather than Silo's single list, which needs its own connection-config design.
+## Watchlist
+
+Scrob has no single watchlist, only named lists. It mirrors another service's watchlist as a list of its own, such as "MDBList - Watchlist", and the plugin does the same: Silo's watchlist lives in a Scrob list named **Silo - Watchlist**, which the first export creates. The plugin never touches your other lists, including ones that mirror other services, so a title can sit on several of them.
+
+Silo's own connection switches control it: import watchlist, export watchlist, and watchlist removals. Silo turns import and export on when a profile connects and leaves removals off, so nothing leaves either watchlist until you enable removals. One switch is the plugin's own: **Remove watched movies from the Scrob watchlist**, on by default. Silo takes a watched movie off its own watchlist by default, but only sends that removal to Scrob with watchlist removals on. Without the switch the movie would stay on the Scrob list, and the next import would put it back on Silo's watchlist. With it, each sync takes a movie off the list once Scrob records a watch made after the movie was listed. A movie you list again after watching it, to rewatch it, stays. Series stay listed, because new episodes can arrive.
+
+The list holds movies and whole series. Seasons, episodes and people you put on it in Scrob are not imported.
+
+The plugin does not sync favorites. Scrob has no favorites list.
 
 ## Live playback
 
 Scrob has no provider-neutral endpoint for reporting playback. Live playback
-reaches it only through a media-server webhook, so the plugin posts the
-Jellyfin webhook shape to Scrob's connection-less webhook route, authenticated
-by the connection's own API key. No extra setup is needed in Scrob.
+reaches it through Scrob's generic player webhook (`/webhooks/kodi`), the one its
+Kodi add-on uses, authenticated by the connection's own API key in a header. No
+extra setup is needed in Scrob. Unlike Scrob's Jellyfin webhook, it has no
+media-server connection behind it. It adds nothing to Scrob's collection, and the
+settings of a Jellyfin connection in Scrob don't apply to it. An episode is found
+by its series' TVDB or IMDb id and its numbers, so TVDB-only shows work too.
+
+The webhook and the plugin's own history writes name their source `silo`, so
+Scrob v2.33 and later show these plays as Silo, with Silo's icon, in Now Playing
+and history. Older versions ignore the field and show the plays as Kodi or
+Manual.
+
+A finished playback does not end through the webhook. The webhook would stamp
+the play with the moment Scrob received the stop, and Silo would import that
+play back as a second viewing. Instead, the plugin writes a play Silo counted
+with `POST /history` at Silo's own watch time, then dismisses the Now Playing
+session. A stop that Scrob would count (90% or more) but Silo did not is only
+dismissed. An unfinished stop still goes through the webhook. A stop also
+clears the session of a playback that started under a version that used
+Scrob's Jellyfin webhook, so updating mid-playback leaves nothing behind.
 
 Scrob forwards Now Playing to the services connected to it, such as Trakt or
 Simkl. If you connect one of those to both Silo and Scrob, it receives the play
@@ -49,13 +75,13 @@ A season rating is stored against the same series row as a whole-series rating i
 
 ## Watched history
 
-`GET /history` pages individual watch events rather than a per-title summary. The plugin reads every page of one connection's history inside a single `ListRemoteState` call and aggregates it into one state per title (play count and the most recent watch time) before returning anything, since a per-event read spread across pages cannot otherwise be reconciled into the host's per-title state. A very large history can exceed the sync time budget; the sync retries on the next scheduled run when it does.
+`GET /history` pages individual watch events, newest first, with no "changed since" filter. The plugin returns one Scrob page per `ListRemoteState` call and lets the host page through, so a history of any size imports without running into a call's time limit. The first import, and one import a day after that, reads the whole history. In between, an import stops 48 hours before the newest play the last one saw, which still catches plays added to Scrob with slightly older dates. Silo keeps the newest play per title and skips plays it already has, so a title seen on several pages, or again in the overlap, adds nothing.
 
 ## Network access and external services
 
 The plugin makes outbound requests only to the Scrob server URL each connection supplies, authenticated with that connection's own API key. It contacts no other host and sends no telemetry. Scrob itself may forward Now Playing to services connected to it (see Live playback above); that forwarding happens inside Scrob, not in the plugin.
 
-The API key travels in a request header, except for live playback reports: Scrob's webhook route accepts the key only as an `api_key` query parameter, so those requests carry it in the URL. Scrob's access log, and the log of any reverse proxy in front of Scrob, can therefore record the key. Restrict who can read those logs.
+The API key always travels in the `X-Api-Key` request header, never in a URL.
 
 ## Setup
 
