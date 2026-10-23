@@ -20,6 +20,8 @@ type fakeLists struct {
 	nextID int
 	// addStatus, when set, answers every item add.
 	addStatus int
+	// watched holds Scrob's completed watches by movie TMDB id.
+	watched map[string][]scrobItemEvent
 }
 
 func (f *fakeLists) serve(t *testing.T) (*apiClient, func()) {
@@ -27,6 +29,9 @@ func (f *fakeLists) serve(t *testing.T) (*apiClient, func()) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/proxy")
 		switch {
+		case r.Method == http.MethodGet && path == "/history/item-events":
+			events := f.watched[r.URL.Query().Get("tmdb_id")]
+			_ = json.NewEncoder(w).Encode(scrobItemEventsResponse{Watched: len(events) > 0, Events: events})
 		case r.Method == http.MethodGet && path == "/lists":
 			_ = json.NewEncoder(w).Encode(scrobListsResponse{Lists: f.lists})
 		case r.Method == http.MethodPost && path == "/lists":
@@ -106,7 +111,7 @@ func TestListWatchlistWithoutTheListReportsNothing(t *testing.T) {
 	client, done := f.serve(t)
 	defer done()
 
-	resp, err := NewServer(nil).listWatchlist(context.Background(), client)
+	resp, err := NewServer(nil).listWatchlist(context.Background(), client, false)
 	if err != nil || resp.GetFault() != nil {
 		t.Fatalf("listWatchlist() = %v, %v", resp, err)
 	}
@@ -134,7 +139,7 @@ func TestListWatchlistReadsOnlyThePluginsList(t *testing.T) {
 	client, done := f.serve(t)
 	defer done()
 
-	resp, err := NewServer(nil).listWatchlist(context.Background(), client)
+	resp, err := NewServer(nil).listWatchlist(context.Background(), client, false)
 	if err != nil || resp.GetFault() != nil {
 		t.Fatalf("listWatchlist() = %v, %v", resp, err)
 	}
@@ -233,3 +238,76 @@ func TestWriteWatchlistRejectsWhatItCannotList(t *testing.T) {
 }
 
 func timeUnix(sec int64) time.Time { return time.Unix(sec, 0).UTC() }
+
+func watchedAt(sec int64) []scrobItemEvent {
+	at := scrobTime(timeUnix(sec))
+	return []scrobItemEvent{{ID: 1, WatchedAt: &at}}
+}
+
+// listedMovies is the plugin's list holding movie 42, listed at 100.
+func listedMovies(watched map[string][]scrobItemEvent) *fakeLists {
+	return &fakeLists{
+		lists: []scrobList{{ID: 9, Name: watchlistName}},
+		items: map[int][]scrobListItem{9: {
+			{ID: 90, AddedAt: scrobTimePtr(timeUnix(100)), Media: scrobMedia{Type: "movie", TMDBID: 42}},
+			{ID: 91, AddedAt: scrobTimePtr(timeUnix(100)), Media: scrobMedia{Type: "series", TMDBID: 1399}},
+		}},
+		watched: watched,
+	}
+}
+
+// A movie watched after it was listed leaves the list and the snapshot, so
+// Silo does not put it back on its watchlist. Series stay.
+func TestListWatchlistRemovesAMovieWatchedSinceListing(t *testing.T) {
+	f := listedMovies(map[string][]scrobItemEvent{"42": watchedAt(200), "1399": watchedAt(200)})
+	client, done := f.serve(t)
+	defer done()
+
+	resp, err := NewServer(nil).listWatchlist(context.Background(), client, true)
+	if err != nil || resp.GetFault() != nil {
+		t.Fatalf("listWatchlist() = %v, %v", resp, err)
+	}
+	if want := []string{"delete /lists/9/items/90"}; strings.Join(f.writes, ",") != strings.Join(want, ",") {
+		t.Errorf("writes = %v, want %v", f.writes, want)
+	}
+	if len(resp.GetItems()) != 1 || resp.GetItems()[0].GetMedia().GetMediaType() != seriesType {
+		t.Errorf("items = %+v, want only the series", resp.GetItems())
+	}
+}
+
+// A movie listed again after a watch, to rewatch it, stays.
+func TestListWatchlistKeepsAMovieWatchedBeforeListing(t *testing.T) {
+	f := listedMovies(map[string][]scrobItemEvent{"42": watchedAt(50)})
+	client, done := f.serve(t)
+	defer done()
+
+	resp, _ := NewServer(nil).listWatchlist(context.Background(), client, true)
+	if len(f.writes) != 0 || len(resp.GetItems()) != 2 {
+		t.Errorf("writes = %v, items = %d; want no removal and both items", f.writes, len(resp.GetItems()))
+	}
+}
+
+// With the setting off, a watched movie stays listed.
+func TestListWatchlistKeepsWatchedMoviesWhenTheSettingIsOff(t *testing.T) {
+	f := listedMovies(map[string][]scrobItemEvent{"42": watchedAt(200)})
+	client, done := f.serve(t)
+	defer done()
+
+	resp, _ := NewServer(nil).listWatchlist(context.Background(), client, false)
+	if len(f.writes) != 0 || len(resp.GetItems()) != 2 {
+		t.Errorf("writes = %v, items = %d; want no removal and both items", f.writes, len(resp.GetItems()))
+	}
+}
+
+// The setting is on unless the connection turned it off, including on a host
+// that sends no connection settings at all.
+func TestConnectionSettingDefaultsWhenAbsent(t *testing.T) {
+	auth := &pluginv1.WatchSyncAuthenticatedContext{}
+	if !connectionSetting(auth, settingRemoveWatchedMovies, true) {
+		t.Errorf("absent setting = false, want the default true")
+	}
+	auth.ConnectionSettings = map[string]string{settingRemoveWatchedMovies: "false"}
+	if connectionSetting(auth, settingRemoveWatchedMovies, true) {
+		t.Errorf("setting turned off = true, want false")
+	}
+}

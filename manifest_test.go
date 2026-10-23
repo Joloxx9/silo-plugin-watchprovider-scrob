@@ -20,4 +20,8 @@ func TestManifestIsValid(t *testing.T) {
 	if !sync.GetImportWatchlist() || !sync.GetExportWatchlist() || !sync.GetRemoveWatchlist() || sync.GetProvidesWatchlistOrder() {
 		t.Errorf("watchlist capabilities = %+v, want import, export and remove without order", sync)
 	}
+	settings := sync.GetConnectionSettings()
+	if len(settings) != 1 || settings[0].GetKey() != "remove_watched_movies" || settings[0].GetDefaultValue().GetBoolValue() != true {
+		t.Errorf("connection settings = %+v, want remove_watched_movies on by default", settings)
+	}
 }

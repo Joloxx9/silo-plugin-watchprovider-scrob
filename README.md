@@ -17,7 +17,9 @@ Connects Silo profiles to a self-hosted [Scrob](https://github.com/ellite/scrob)
 
 Scrob has no single watchlist, only named lists. It mirrors another service's watchlist as a list of its own, such as "MDBList - Watchlist", and the plugin does the same: Silo's watchlist lives in a Scrob list named **Silo - Watchlist**, which the first export creates. The plugin never touches your other lists, including ones that mirror other services, so a title can sit on several of them.
 
-Silo's own connection switches control it: import watchlist, export watchlist, and watchlist removals. Silo turns import and export on when a profile connects and leaves removals off, so nothing leaves either watchlist until you enable removals. The list holds movies and whole series. Seasons, episodes and people you put on it in Scrob are not imported.
+Silo's own connection switches control it: import watchlist, export watchlist, and watchlist removals. Silo turns import and export on when a profile connects and leaves removals off, so nothing leaves either watchlist until you enable removals. One switch is the plugin's own: **Remove watched movies from the Scrob watchlist**, on by default. Silo takes a watched movie off its own watchlist by default, but only sends that removal to Scrob with watchlist removals on. Without the switch the movie would stay on the Scrob list, and the next import would put it back on Silo's watchlist. With it, each sync takes a movie off the list once Scrob records a watch made after the movie was listed. A movie you list again after watching it, to rewatch it, stays. Series stay listed, because new episodes can arrive.
+
+The list holds movies and whole series. Seasons, episodes and people you put on it in Scrob are not imported.
 
 The plugin does not sync favorites. Scrob has no favorites list.
 

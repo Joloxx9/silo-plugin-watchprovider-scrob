@@ -18,6 +18,14 @@ const watchlistName = "Silo - Watchlist"
 
 const watchlistDescription = "Silo's watchlist, kept in sync by the Silo Scrob plugin."
 
+// settingRemoveWatchedMovies is the connection setting, on by default, that
+// takes a movie off the plugin's list once Scrob records a watch of it made
+// after it was listed. Silo prunes a watched movie from its own watchlist by
+// default but sends that removal on only when the connection syncs watchlist
+// removals, which Silo leaves off; without this the movie stays in Scrob, and
+// the next import puts it back on Silo's watchlist.
+const settingRemoveWatchedMovies = "remove_watched_movies"
+
 const (
 	errWatchlistNeedsMedia    = "Scrob watchlist sync takes movies and series only"
 	errWatchlistNeedsID       = "Scrob watchlist sync requires a movie or series with a TMDB or TVDB id"
@@ -98,7 +106,7 @@ func watchlistItems(ctx context.Context, client *apiClient, listID int) ([]scrob
 // does, and only with watchlist removals on. Before the first export creates
 // the list there is nothing to report, so the traversal is an empty
 // incremental one rather than a snapshot claiming the watchlist is empty.
-func (s *Server) listWatchlist(ctx context.Context, client *apiClient) (*pluginv1.WatchSyncListRemoteStateResponse, error) {
+func (s *Server) listWatchlist(ctx context.Context, client *apiClient, removeWatched bool) (*pluginv1.WatchSyncListRemoteStateResponse, error) {
 	listID, fault := findWatchlist(ctx, client)
 	if fault != nil {
 		return &pluginv1.WatchSyncListRemoteStateResponse{Fault: fault}, nil
@@ -113,6 +121,9 @@ func (s *Server) listWatchlist(ctx context.Context, client *apiClient) (*pluginv
 	response := &pluginv1.WatchSyncListRemoteStateResponse{CompleteSnapshot: true}
 	for _, item := range items {
 		if !watchlistMedia(item.Media) {
+			continue
+		}
+		if removeWatched && removeIfWatched(ctx, client, listID, item) {
 			continue
 		}
 		key, media, ok := stateMediaFromScrob(item.Media)
@@ -255,4 +266,51 @@ func failAll(events []*pluginv1.WatchSyncEvent, results *resultSet, fault *plugi
 		results.fail(event, fault)
 	}
 	return nil
+}
+
+// removeIfWatched takes a movie off the list when Scrob holds a completed
+// watch of it from after it was listed, and reports whether it did. A movie
+// listed again after a watch, to rewatch it, stays. Any failure keeps the
+// movie: the next sync tries again.
+func removeIfWatched(ctx context.Context, client *apiClient, listID int, item scrobListItem) bool {
+	if item.Media.Type != "movie" || item.AddedAt == nil || item.AddedAt.Time().IsZero() {
+		return false
+	}
+	query, ok := itemEventsQuery(&pluginv1.WatchSyncMedia{
+		MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
+		ExternalIds: externalIDsFromScrob(scrobIDs{TMDB: item.Media.TMDBID, TVDB: item.Media.TVDBID}),
+	})
+	if !ok {
+		return false
+	}
+	var payload scrobItemEventsResponse
+	if fault := client.get(ctx, "/history/item-events", query, &payload); fault != nil {
+		return false
+	}
+	listed := item.AddedAt.Time()
+	watchedSince := false
+	for _, event := range payload.Events {
+		if event.WatchedAt != nil && event.WatchedAt.Time().After(listed) {
+			watchedSince = true
+			break
+		}
+	}
+	if !watchedSince {
+		return false
+	}
+	code, fault := client.delete(ctx, "/lists/"+strconv.Itoa(listID)+"/items/"+strconv.Itoa(item.ID), nil)
+	return fault == nil || code == http.StatusNotFound
+}
+
+// connectionSetting reads a BOOLEAN connection setting. A host that predates
+// connection settings sends none, so the default applies.
+func connectionSetting(auth *pluginv1.WatchSyncAuthenticatedContext, key string, fallback bool) bool {
+	switch auth.GetConnectionSettings()[key] {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		return fallback
+	}
 }

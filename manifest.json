@@ -54,7 +54,16 @@
           "WATCH_SYNC_MEDIA_TYPE_SERIES"
         ],
         "external_id_namespaces": ["tmdb", "imdb", "tvdb"],
-        "max_batch_size": 50
+        "max_batch_size": 50,
+        "connection_settings": [
+          {
+            "key": "remove_watched_movies",
+            "label": "Remove watched movies from the Scrob watchlist",
+            "description": "Takes a movie off the \"Silo - Watchlist\" list in Scrob once you watch it after adding it, so Silo does not put it back on your watchlist. A movie you add again after watching it stays. Series stay listed, since new episodes can arrive.",
+            "type": "WATCH_SYNC_CONNECTION_SETTING_TYPE_BOOLEAN",
+            "default_value": true
+          }
+        ]
       }
     }
   ],
