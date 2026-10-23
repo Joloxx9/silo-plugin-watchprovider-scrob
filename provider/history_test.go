@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func scrobTimePtr(t time.Time) *scrobTime {
@@ -77,15 +78,24 @@ func TestListWatchedAggregatesPlaysAcrossPages(t *testing.T) {
 	}
 }
 
+// A play deleted between the lookup and the delete is already in the desired
+// state.
 func TestMarkUnwatchedTreatsNotFoundAsNoChange(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	held := scrobTime(at)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(scrobItemEventsResponse{Watched: true, Events: []scrobItemEvent{{ID: 5, WatchedAt: &held}}})
 	}))
 	defer server.Close()
 	client, _ := newAPIClient(server.URL, "key", server.Client())
 	event := &pluginv1.WatchSyncEvent{
-		EventId:   "e1",
-		Operation: pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_UNWATCHED,
+		EventId:    "e1",
+		Operation:  pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_UNWATCHED,
+		OccurredAt: timestamppb.New(at),
 		Media: &pluginv1.WatchSyncMedia{
 			MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
 			ExternalIds: map[string]string{"tmdb": "42"},

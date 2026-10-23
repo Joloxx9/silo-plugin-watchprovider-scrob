@@ -170,30 +170,30 @@ func markWatched(ctx context.Context, client *apiClient, events []*pluginv1.Watc
 
 // markUnwatched removes the play Silo no longer holds.
 //
-// When the event says which play it was, only that one is deleted: Scrob keeps
-// a row per viewing, and dropping the title's whole history because one
-// rewatch was undone would destroy counts Silo never asked about. Without a
-// timestamp there is nothing to single out, so the title's history is removed
-// as before.
+// Silo sends one unwatch per history row it removed, with that play's time, so
+// only the Scrob play at that time is deleted. Scrob keeps a row per viewing,
+// and a title's other plays, including ones Silo never had, must survive.
+// When no Scrob play is close to that time there is nothing of Silo's to
+// remove, so the event changes nothing.
 func markUnwatched(ctx context.Context, client *apiClient, events []*pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
 	for _, event := range events {
-		path, itemQuery, ok := unwatchItemPath(event.GetMedia())
-		if !ok {
-			results.reject(event, unsupportedPlayMessage)
+		eventID, found, fault := scrobPlayAt(ctx, client, event)
+		switch {
+		case fault != nil && connectionWide(fault):
+			return fault
+		case fault != nil:
+			results.fail(event, fault)
+			continue
+		case !found:
+			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
 			continue
 		}
-		query := itemQuery
-		if eventID, found, fault := scrobPlayAt(ctx, client, event); fault != nil && connectionWide(fault) {
-			return fault
-		} else if found {
-			path, query = fmt.Sprintf("/history/event/%d", eventID), nil
-		}
-		status, fault := client.delete(ctx, path, query)
+		status, fault := client.delete(ctx, fmt.Sprintf("/history/event/%d", eventID), nil)
 		switch {
 		case fault == nil:
 			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED)
 		case status == http.StatusNotFound:
-			// Scrob has no watch event for this item: already the desired state.
+			// The play is already gone: the desired state.
 			results.set(event, pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE)
 		case connectionWide(fault):
 			return fault
@@ -230,28 +230,6 @@ func watchEventBody(event *pluginv1.WatchSyncEvent) (scrobWatchEventCreate, bool
 		body.EpisodeNumber = &episode
 	}
 	return body, true
-}
-
-// unwatchItemPath names the title to remove. The query is returned separately
-// because the request builder escapes the path: a "?" folded into it becomes
-// %3F, the route never matches, and Scrob's 404 reads as "already unwatched".
-func unwatchItemPath(media *pluginv1.WatchSyncMedia) (string, url.Values, bool) {
-	kind := mediaType(media.GetMediaType())
-	if kind != "movie" && kind != "episode" {
-		return "", nil, false
-	}
-	ids := idsFromExternal(media.GetExternalIds())
-	if ids.TMDB <= 0 && ids.TVDB <= 0 {
-		return "", nil, false
-	}
-	query := url.Values{"media_type": {kind}}
-	if ids.TMDB > 0 {
-		query.Set("tmdb_id", strconv.Itoa(ids.TMDB))
-	}
-	if ids.TVDB > 0 {
-		query.Set("tvdb_id", strconv.Itoa(ids.TVDB))
-	}
-	return "/history/item", query, true
 }
 
 // scrobAlreadyHasPlay reports whether Scrob already holds this play.
@@ -323,18 +301,16 @@ func itemEventsQuery(media *pluginv1.WatchSyncMedia) (url.Values, bool) {
 
 // scrobPlayAt finds the Scrob watch event for this play, so an unwatch removes
 // one viewing rather than the title's whole history. It reuses the per-title
-// lookup the duplicate check already relies on.
-//
-// A missing timestamp, an unidentifiable title or a failed lookup simply means
-// no single play was found, and the caller falls back to removing the item.
+// lookup the duplicate check already relies on. An event without a time or a
+// title Scrob can look up is rejected: there is no single play to name.
 func scrobPlayAt(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent) (int, bool, *pluginv1.WatchSyncFault) {
 	occurred := event.GetOccurredAt()
 	if occurred == nil || occurred.CheckValid() != nil || occurred.AsTime().IsZero() {
-		return 0, false, nil
+		return 0, false, invalidRequestFault("Scrob unwatch needs the play's watch time")
 	}
 	query, ok := itemEventsQuery(event.GetMedia())
 	if !ok {
-		return 0, false, nil
+		return 0, false, invalidRequestFault(unsupportedPlayMessage)
 	}
 	var payload scrobItemEventsResponse
 	if fault := client.get(ctx, "/history/item-events", query, &payload); fault != nil {
