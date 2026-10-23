@@ -44,6 +44,10 @@ func TestExchangeAPIKeySucceeds(t *testing.T) {
 	if resp.GetCredentials().GetSecretAttributes()[configBaseURL] != server.URL {
 		t.Fatalf("SecretAttributes[%q] = %q, want %q", configBaseURL, resp.GetCredentials().GetSecretAttributes()[configBaseURL], server.URL)
 	}
+	// Existing connections are stored under this id, so it must not change.
+	if got := resp.GetAccount().GetExternalSubject(); got != server.URL {
+		t.Fatalf("ExternalSubject = %q, want the server URL", got)
+	}
 }
 
 func TestExchangeAPIKeyRejectsInvalidKey(t *testing.T) {
@@ -69,7 +73,7 @@ func TestExchangeAPIKeyRejectsInvalidKey(t *testing.T) {
 func TestRequestsGoThroughTheAPIProxyPrefix(t *testing.T) {
 	// Regression test: a standard Scrob deployment only publishes the
 	// frontend's port. The frontend serves its own pages at bare paths like
-	// /ratings, which is not one of its routes, so an unauthenticated
+	// /profile/me, which is not one of its routes, so an unauthenticated
 	// request there 302s to /login, and only forwards to the backend under
 	// /api/proxy/*.
 	var gotPath string
@@ -88,8 +92,8 @@ func TestRequestsGoThroughTheAPIProxyPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeAPIKey() error: %v", err)
 	}
-	if gotPath != "/api/proxy/ratings" {
-		t.Fatalf("request path = %q, want /api/proxy/ratings", gotPath)
+	if gotPath != "/api/proxy/profile/me" {
+		t.Fatalf("request path = %q, want /api/proxy/profile/me", gotPath)
 	}
 }
 

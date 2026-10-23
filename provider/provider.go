@@ -204,11 +204,12 @@ func applyGroup(ctx context.Context, client *apiClient, events []*pluginv1.Watch
 }
 
 func validateAccount(ctx context.Context, client *apiClient) (*pluginv1.WatchSyncAccount, *pluginv1.WatchSyncFault) {
-	// Scrob has no api-key-friendly whoami endpoint (GET /auth/me requires a
-	// session JWT), so a ratings read doubles as the connectivity and
-	// credential check.
-	var response scrobRatingsResponse
-	if fault := client.get(ctx, "/ratings", nil, &response); fault != nil {
+	// GET /auth/me needs a session JWT, but GET /profile/me takes the API
+	// key and returns one small object, so it is the connectivity and
+	// credential check. The account stays named after the server: its id is
+	// what existing connections were stored under.
+	var profile map[string]any
+	if fault := client.get(ctx, "/profile/me", nil, &profile); fault != nil {
 		return nil, fault
 	}
 	label := accountLabel(client.baseURL.String())
