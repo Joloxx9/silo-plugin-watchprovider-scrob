@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
 )
@@ -84,6 +85,12 @@ func scrobblePlayback(ctx context.Context, client *apiClient, events []*pluginv1
 	// unlike every other request this one carries it in the URL.
 	query := url.Values{"api_key": {client.apiKey}}
 	for _, event := range events {
+		if notification == "PlaybackStop" && finishedPlayback(event) {
+			if fault := recordFinishedPlayback(ctx, client, event, results); fault != nil {
+				return fault
+			}
+			continue
+		}
 		body, ok := jellyfinWebhookBody(event, notification, paused)
 		if !ok {
 			results.reject(event, errScrobbleNeedsExternalID)
@@ -157,4 +164,98 @@ func scrobbleSessionID(event *pluginv1.WatchSyncEvent) string {
 		return id
 	}
 	return "silo-" + event.GetEventId()
+}
+
+// scrobWatchedFraction is how far into a title Scrob's webhook counts a stop
+// as a finished play.
+const scrobWatchedFraction = 0.90
+
+// finishedPlayback reports a stop that Scrob's webhook would record as a
+// finished play: either Silo counted it, or it reached Scrob's own threshold.
+func finishedPlayback(event *pluginv1.WatchSyncEvent) bool {
+	if event.GetCompleted() {
+		return true
+	}
+	duration := event.GetDurationSeconds()
+	return duration > 0 && event.GetPositionSeconds()/duration >= scrobWatchedFraction
+}
+
+// recordFinishedPlayback ends a finished playback without the webhook stop.
+//
+// The webhook would stamp the play with the moment Scrob received the stop.
+// Silo treats an imported play as its own only within the same second, so
+// that play would come back into Silo as a second viewing on the next import.
+// Silo also counts the stop as the play's export and sends no separate one.
+// So a play Silo counted is written with POST /history at Silo's time, and the
+// Now Playing session is dismissed rather than stopped, which would forward a
+// second play to the services connected to Scrob. A stop Scrob would count but
+// Silo did not is only dismissed.
+func recordFinishedPlayback(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent, results *resultSet) *pluginv1.WatchSyncFault {
+	status := pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_NO_CHANGE
+	if event.GetCompleted() {
+		body, ok := watchEventBody(event)
+		if !ok {
+			results.reject(event, unsupportedPlayMessage)
+			return dismissSessionQuietly(ctx, client, event)
+		}
+		code, fault := client.postStatus(ctx, "/history", body, nil)
+		switch {
+		case fault == nil:
+			status = pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED
+		case code == http.StatusConflict:
+			// Scrob already holds a play within its duplicate window.
+		case connectionWide(fault):
+			return fault
+		default:
+			results.fail(event, fault)
+			return nil
+		}
+	}
+	if fault := dismissSession(ctx, client, event); fault != nil {
+		if connectionWide(fault) {
+			return fault
+		}
+		results.fail(event, fault)
+		return nil
+	}
+	results.set(event, status)
+	return nil
+}
+
+// dismissSessionQuietly ends the session of a play that cannot be recorded,
+// reporting only a fault that ends the whole call.
+func dismissSessionQuietly(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent) *pluginv1.WatchSyncFault {
+	if fault := dismissSession(ctx, client, event); fault != nil && connectionWide(fault) {
+		return fault
+	}
+	return nil
+}
+
+type scrobNowPlayingResponse struct {
+	NowPlaying []struct {
+		SessionKey string `json:"session_key"`
+	} `json:"now_playing"`
+}
+
+// dismissSession removes this playback's Now Playing session without
+// recording or forwarding anything. Scrob keys a Jellyfin webhook session as
+// "jellyfin:<user id>:<session id>" and does not tell an API-key caller its
+// user id, so the key is read back from the Now Playing list.
+func dismissSession(ctx context.Context, client *apiClient, event *pluginv1.WatchSyncEvent) *pluginv1.WatchSyncFault {
+	var nowPlaying scrobNowPlayingResponse
+	if fault := client.get(ctx, "/history/now-playing", nil, &nowPlaying); fault != nil {
+		return fault
+	}
+	suffix := ":" + scrobbleSessionID(event)
+	for _, session := range nowPlaying.NowPlaying {
+		if !strings.HasPrefix(session.SessionKey, "jellyfin:") || !strings.HasSuffix(session.SessionKey, suffix) {
+			continue
+		}
+		// The request builder escapes the path, so the key goes in raw.
+		code, fault := client.delete(ctx, "/history/session/"+session.SessionKey, nil)
+		if fault != nil && code != http.StatusNotFound {
+			return fault
+		}
+	}
+	return nil
 }

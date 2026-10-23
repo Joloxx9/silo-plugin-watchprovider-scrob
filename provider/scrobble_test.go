@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Scrob accepts live playback only through a media-server webhook, keyed by the
@@ -175,5 +177,106 @@ func TestScrobbleRejectsAServerError(t *testing.T) {
 	}
 	if msg := r[0].GetFault().GetSafeMessage(); !strings.Contains(msg, "HTTP 500") || !strings.Contains(msg, "update Silo") {
 		t.Errorf("message = %q, want the status and what to do", msg)
+	}
+}
+
+// stopServer records what a stop sends to Scrob. Now Playing lists this
+// playback's Jellyfin session and another source's session with the same id.
+func stopServer(t *testing.T) (*apiClient, *[]string, *scrobWatchEventCreate, func()) {
+	t.Helper()
+	calls := []string{}
+	var written scrobWatchEventCreate
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/proxy/history":
+			_ = json.NewDecoder(r.Body).Decode(&written)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/proxy/history/now-playing":
+			_, _ = w.Write([]byte(`{"now_playing":[{"session_key":"jellyfin:3:sess-7"},{"session_key":"kodi:3:sess-7"}]}`))
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}
+	}))
+	client, err := newAPIClient(server.URL, "key", server.Client())
+	if err != nil {
+		server.Close()
+		t.Fatalf("newAPIClient() error: %v", err)
+	}
+	return client, &calls, &written, server.Close
+}
+
+func stopEvent(completed bool, position float64) *pluginv1.WatchSyncEvent {
+	return &pluginv1.WatchSyncEvent{
+		EventId:           "e1",
+		PlaybackSessionId: "sess-7",
+		OccurredAt:        timestamppb.New(time.Date(2026, 10, 23, 20, 15, 30, 0, time.UTC)),
+		PositionSeconds:   position,
+		DurationSeconds:   100,
+		Completed:         completed,
+		Media: &pluginv1.WatchSyncMedia{
+			MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
+			Title:       "Heat",
+			ExternalIds: map[string]string{"tmdb": "42"},
+		},
+	}
+}
+
+// A play Silo counted is written at Silo's time, so the next import does not
+// bring it back as a second viewing, and its session is dismissed rather than
+// stopped through the webhook.
+func TestScrobbleStopRecordsAFinishedPlayAtSilosTime(t *testing.T) {
+	client, calls, written, done := stopServer(t)
+	defer done()
+
+	events := []*pluginv1.WatchSyncEvent{stopEvent(true, 95)}
+	results := newResultSet(events)
+	if fault := scrobblePlayback(context.Background(), client, events, results, "PlaybackStop", false); fault != nil {
+		t.Fatalf("scrobblePlayback() fault: %v", fault)
+	}
+	want := []string{"POST /api/proxy/history", "GET /api/proxy/history/now-playing", "DELETE /api/proxy/history/session/jellyfin:3:sess-7"}
+	if strings.Join(*calls, ",") != strings.Join(want, ",") {
+		t.Errorf("calls = %v, want %v", *calls, want)
+	}
+	if written.WatchedAt != "2026-10-23T20:15:30Z" || written.Source != "silo" || !written.Completed {
+		t.Errorf("written play = %+v, want completed at Silo's time from silo", *written)
+	}
+	if r := results.list(); r[0].GetStatus() != pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED {
+		t.Errorf("status = %v, want APPLIED", r[0].GetStatus())
+	}
+}
+
+// A stop Scrob would count as a play but Silo did not is dismissed, so Scrob
+// holds no play Silo lacks.
+func TestScrobbleStopDismissesAPlaySiloDidNotCount(t *testing.T) {
+	client, calls, _, done := stopServer(t)
+	defer done()
+
+	events := []*pluginv1.WatchSyncEvent{stopEvent(false, 92)}
+	if fault := scrobblePlayback(context.Background(), client, events, newResultSet(events), "PlaybackStop", false); fault != nil {
+		t.Fatalf("scrobblePlayback() fault: %v", fault)
+	}
+	want := []string{"GET /api/proxy/history/now-playing", "DELETE /api/proxy/history/session/jellyfin:3:sess-7"}
+	if strings.Join(*calls, ",") != strings.Join(want, ",") {
+		t.Errorf("calls = %v, want %v", *calls, want)
+	}
+}
+
+// An unfinished stop still ends the session through the webhook, which
+// records no finished play.
+func TestScrobbleStopSendsAnUnfinishedStopToTheWebhook(t *testing.T) {
+	client, calls, _, done := stopServer(t)
+	defer done()
+
+	events := []*pluginv1.WatchSyncEvent{stopEvent(false, 40)}
+	if fault := scrobblePlayback(context.Background(), client, events, newResultSet(events), "PlaybackStop", false); fault != nil {
+		t.Fatalf("scrobblePlayback() fault: %v", fault)
+	}
+	if want := []string{"POST /api/proxy" + jellyfinWebhookPath}; strings.Join(*calls, ",") != strings.Join(want, ",") {
+		t.Errorf("calls = %v, want %v", *calls, want)
 	}
 }
